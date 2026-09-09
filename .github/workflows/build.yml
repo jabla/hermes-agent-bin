@@ -166,12 +166,15 @@ jobs:
             git clone ssh://aur@aur.archlinux.org/hermes-agent-bin.git /tmp/aur
           cp aur/PKGBUILD aur/.SRCINFO /tmp/aur/
           cd /tmp/aur
-          if git diff --quiet; then
+          PKGVER=$(grep -oP '(?<=^pkgver=).*' PKGBUILD)
+          PKGREL=$(grep -oP '(?<=^pkgrel=).*' PKGBUILD)
+          # Stage first: git diff alone ignores untracked files, so a fresh
+          # (empty) AUR repo would falsely report "nothing to push" and never
+          # create the initial commit.
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
             echo "AUR package up to date, nothing to push"
           else
-            PKGVER=$(grep -oP '(?<=^pkgver=).*' PKGBUILD)
-            PKGREL=$(grep -oP '(?<=^pkgrel=).*' PKGBUILD)
-            git add PKGBUILD .SRCINFO
             git commit -m "Update to ${PKGVER}-${PKGREL}"
             GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_ci -o IdentitiesOnly=yes" \
               git push origin master
