@@ -52,7 +52,9 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel git curl \
-            nodejs npm uv rsync
+            nodejs npm uv rsync \
+            ripgrep ffmpeg nss atk at-spi2-core cups libdrm libxkbcommon \
+            mesa pango cairo alsa-lib
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
