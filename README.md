@@ -15,7 +15,9 @@ This replaces the source package `hermes-agent` (they conflict). Installs to
 
 - `PKGBUILD` — the *build* recipe, run in CI (archlinux container, non-root
   makepkg). Runs `npm ci` + esbuild (TUI `entry.js`, web `web_dist`) and
-  `uv sync --locked` into a relocatable `python3.11` venv.
+  `uv sync --locked` into a self-contained `python3.11` venv (upstream pins
+  `>=3.11,<3.14`, but Arch dropped `python311` from its repos, so a standalone
+  CPython 3.11 is bundled in — the package needs no system Python).
 - `aur/PKGBUILD` — the AUR *wrapper*, source of truth for
   [hermes-agent-bin on the AUR](https://aur.archlinux.org/packages/hermes-agent-bin).
   Its `source` URL points at the GitHub Release artifact; `package()` only

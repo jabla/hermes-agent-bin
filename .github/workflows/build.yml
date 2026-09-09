@@ -52,7 +52,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel git curl \
-            nodejs npm python uv python311 rsync
+            nodejs npm uv rsync
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -88,7 +88,7 @@ jobs:
       - name: Install runtime deps
         run: |
           pacman -Syu --noconfirm --needed \
-            python311 nodejs uv ripgrep ffmpeg git curl \
+            nodejs uv ripgrep ffmpeg git curl \
             nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

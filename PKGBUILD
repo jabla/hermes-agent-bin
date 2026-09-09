@@ -17,7 +17,7 @@ arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
 license=('MIT')
 depends=(
-  'python311' 'nodejs' 'uv' 'ripgrep' 'ffmpeg'
+  'nodejs' 'uv' 'ripgrep' 'ffmpeg'
   'nss' 'atk' 'at-spi2-core' 'cups' 'libdrm' 'libxkbcommon' 'mesa' 'pango'
   'cairo' 'alsa-lib' 'git' 'curl'
 )
@@ -45,9 +45,13 @@ build() {
   npm run build:ink --workspace ui-tui
   npm run build --workspace ui-tui
 
-  UV_PYTHON_DOWNLOADS=never uv venv \
+  # Upstream requires-python is ">=3.11,<3.14", but Arch dropped python311
+  # from its repos (only python 3.14 remains). Bundle a standalone CPython
+  # 3.11 via uv so the package is self-contained and needs no system python.
+  uv python install 3.11
+  UV_PYTHON_PREFERENCE=only-managed uv venv \
     --clear \
-    --python /usr/bin/python3.11 \
+    --python 3.11 \
     --relocatable \
     venv
   UV_PYTHON_DOWNLOADS=never \
@@ -81,6 +85,20 @@ package() {
     --exclude='scripts/tests' --exclude='scripts/install.*' \
     --exclude='build' \
     . "$_optdir/"
+
+  # Bundle the standalone CPython into the package so the venv is fully
+  # self-contained. uv's venv symlinks bin/python to the uv-managed interpreter
+  # at an absolute path, which breaks after the package moves to /opt. Copy the
+  # interpreter (bin/ + lib/) in and repoint bin/python relative so base + venv
+  # relocate together. Skip include/ (headers) and share/ (man pages) — not
+  # needed at runtime.
+  _pybin="$(UV_PYTHON_PREFERENCE=only-managed uv python find 3.11)"
+  _pyhome="$(dirname "$(dirname "$_pybin")")"
+  install -d "$_optdir/python"
+  cp -a "$_pyhome"/bin "$_pyhome"/lib "$_optdir/python/"
+  rm -f "$_optdir/venv/bin/python"
+  ln -s ../../python/bin/python3.11 "$_optdir/venv/bin/python"
+  sed -i "s|^home = .*|home = /opt/hermes-agent/python/bin|" "$_optdir/venv/pyvenv.cfg"
 
   echo "console.log('skipping build, using prebuilt dist/entry.js')" > "$_optdir/ui-tui/scripts/build.mjs"
 
