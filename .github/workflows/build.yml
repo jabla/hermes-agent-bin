@@ -141,7 +141,7 @@ jobs:
           else
             gh release create "$TAG" "$FILE" \
               --title "hermes-agent-bin ${PKGVER}-${PKGREL}" \
-              --notes "Prebuilt Arch package from upstream source tag ${UPSTREAM}. Install with: yay -U ${FILE}"
+              --notes "Prebuilt Arch package from upstream source tag ${UPSTREAM}"
             echo "Release created: $TAG"
           fi
 
