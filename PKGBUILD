@@ -23,6 +23,7 @@ depends=(
 )
 makedepends=('npm' 'rsync')
 conflicts=('hermes-agent')
+provides=('hermes-agent')
 options=('!debug')
 source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
