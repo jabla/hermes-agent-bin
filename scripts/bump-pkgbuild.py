@@ -54,13 +54,18 @@ def edit_pkgbuild(path: str, tag: str, version: str, commit: str, checksum: str)
     open(path, "w").write(pkg)
 
 
-def edit_aur_pkgbuild(path: str, version: str, checksum: str):
+def edit_aur_pkgbuild(path: str, version: str):
     """Edit the AUR wrapper PKGBUILD (no _pkgver_tag/_commit; source URL is
-    variable-driven and follows pkgver/pkgrel automatically)."""
+    variable-driven and follows pkgver/pkgrel automatically).
+
+    Deliberately does NOT touch sha256sums: the wrapper's source is the
+    release ARTIFACT, whose sha only exists AFTER the CI build. The
+    post-release sync job computes the real artifact sha and injects it —
+    writing the upstream source-tarball sha here would break `yay -S`
+    checksums on the first automated bump."""
     pkg = open(path).read()
     pkg = re.sub(r"(?m)^pkgver=.*$", f"pkgver={version}", pkg)
     pkg = re.sub(r"(?m)^pkgrel=.*$", "pkgrel=1", pkg)
-    pkg = SHA_RE.sub(f"sha256sums=('{checksum}'", pkg)
     open(path, "w").write(pkg)
 
 
@@ -121,7 +126,7 @@ def main() -> int:
         return 0
 
     edit_pkgbuild("PKGBUILD", tag, version, commit, checksum)
-    edit_aur_pkgbuild("aur/PKGBUILD", version, checksum)
+    edit_aur_pkgbuild("aur/PKGBUILD", version)
     regen_srcinfo("aur")
 
     branch = f"bump/{tag}"

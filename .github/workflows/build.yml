@@ -151,6 +151,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Compute release artifact sha256 and pin it into aur/
+        run: |
+          set -euo pipefail
+          PKGVER=$(grep -oP '(?<=^pkgver=).*' PKGBUILD)
+          PKGREL=$(grep -oP '(?<=^pkgrel=).*' PKGBUILD)
+          FILE="hermes-agent-bin-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst"
+          URL="https://github.com/${{ github.repository }}/releases/download/v${PKGVER}-${PKGREL}/${FILE}"
+          curl -fsSL -o /tmp/pkg.pkg.tar.zst "$URL"
+          SHA=$(sha256sum /tmp/pkg.pkg.tar.zst | cut -d' ' -f1)
+          sed -i -E "s|^(sha256sums=\(')[0-9a-f]{64}('\))|\1${SHA}\2|" aur/PKGBUILD
+          sed -i -E "s|^([[:space:]]*sha256sums = )[0-9a-f]{64}|\1${SHA}|" aur/.SRCINFO
+          echo "artifact sha256=${SHA}"
+
       - name: Push aur/ to AUR git (publish)
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
