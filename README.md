@@ -22,7 +22,7 @@ This replaces the source package `hermes-agent` (they conflict). Installs to
   [hermes-agent-bin on the AUR](https://aur.archlinux.org/packages/hermes-agent-bin).
   Its `source` URL points at the GitHub Release artifact; `package()` only
   extracts the payload.
-- `scripts/bump-pkgbuild.py` — daily bump automation: detects a new upstream
+- `scripts/bump-pkgbuild.py` — bump automation, runs every 2 hours: detects a new upstream
   tag, edits both PKGBUILDs + `.SRCINFO`, opens an auto-merge PR.
 - `.github/workflows/build.yml` — `bump` / `build` / `smoke` / `release` /
   `aur-sync` pipeline.
