@@ -3,8 +3,8 @@ name: build-package
 on:
   workflow_dispatch:
   schedule:
-    # daily check for new upstream tags (release cadence is ~weekly)
-    - cron: '23 3 * * *'
+    # check every 2 hours for new upstream tags (release cadence is ~weekly)
+    - cron: '23 */2 * * *'
   pull_request:
   push:
     branches: [main]
