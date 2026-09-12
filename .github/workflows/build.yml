@@ -40,6 +40,20 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Fail loudly when the PAT is missing or expired: the run then aborts
+      # here instead of silently opening a bot-authored PR that nobody can
+      # auto-merge and that never triggers the release pipeline.
+      - name: Check the bump token
+        env:
+          GH_TOKEN: ${{ secrets.BUMP_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          login=$(gh api /user --jq .login)
+          echo "bump token identity: $login"
+          if [ "$login" = "github-actions[bot]" ]; then
+            echo "::warning::BUMP_TOKEN is unset or invalid for PR use — the bump PR will be bot-authored, its checks will need manual approval and the merge will not trigger build/release/aur-sync"
+          fi
+
       - name: Bump PKGBUILD + aur/ and open auto-merge PR
         env:
           # Prefer the BUMP_TOKEN PAT over the workflow token. A PR opened with
