@@ -42,7 +42,15 @@ jobs:
 
       - name: Bump PKGBUILD + aur/ and open auto-merge PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Prefer the BUMP_TOKEN PAT over the workflow token. A PR opened with
+          # GITHUB_TOKEN is authored by github-actions[bot], and GitHub then
+          # holds its pull_request runs in "action_required" (nothing runs until
+          # a human approves) — and the merge auto-merge performs afterwards is
+          # token-attributed, so the follow-up push run never fires and
+          # release/aur-sync silently never run. With a PAT the PR is
+          # user-authored, checks run on their own and the merge triggers the
+          # push pipeline. Falls back to the workflow token when unset.
+          GH_TOKEN: ${{ secrets.BUMP_TOKEN || github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
