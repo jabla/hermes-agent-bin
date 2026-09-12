@@ -2,6 +2,11 @@ name: build-package
 
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: "Run the upstream bump check now (normally schedule-only)"
+        type: boolean
+        default: false
   schedule:
     # check every 2 hours for new upstream tags (release cadence is ~weekly)
     - cron: '23 */2 * * *'
@@ -20,12 +25,15 @@ jobs:
   # checks and the push that follows the merge.
   # ---------------------------------------------------------------------------
   bump:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.bump)
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
     permissions:
       contents: write
+      # gh pr create / gh pr merge --auto need this; a job-level permissions
+      # block sets every unlisted scope to none.
+      pull-requests: write
     steps:
       - name: Install toolchain (makepkg needed for .SRCINFO regeneration)
         run: pacman -Syu --noconfirm --needed base-devel git github-cli python curl
@@ -36,14 +44,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: python3 scripts/bump-pkgbuild.py --pr
+        run: |
+          set -euo pipefail
+          # makepkg refuses to run as root, and the bump regenerates
+          # aur/.SRCINFO with it, so the whole script runs as an unprivileged
+          # user — same pattern as the build job.
+          useradd -m bumper
+          chown -R bumper:bumper "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          runuser -u bumper -- env HOME=/home/bumper \
+            GH_TOKEN="$GH_TOKEN" GH_REPO="$GH_REPO" \
+            python3 scripts/bump-pkgbuild.py --pr
 
   # ---------------------------------------------------------------------------
   # Build + smoke: run for PRs (merge gate), pushes to main (after merge) and
   # manual dispatch. Never on schedule (bump job handles that).
   # ---------------------------------------------------------------------------
   build:
-    if: github.event_name != 'schedule'
+    # not on schedule; also skipped when a manual dispatch only runs the bump
+    if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.bump)
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest

@@ -8,6 +8,8 @@ Two modes:
 
 Exits 0 without changes when PKGBUILD already tracks the latest upstream tag.
 Requires: gh (GH_TOKEN + GH_REPO env), makepkg available for .SRCINFO regen.
+Must not run as root: makepkg refuses to run as root, so the container job
+runs this script through runuser as an unprivileged user.
 """
 import argparse
 import hashlib
@@ -69,7 +71,18 @@ def edit_aur_pkgbuild(path: str, version: str):
     open(path, "w").write(pkg)
 
 
+def require_non_root():
+    """makepkg refuses to run as root — fail before anything is written."""
+    if os.geteuid() == 0:
+        sys.exit(
+            "refusing to run as root: makepkg (used to regenerate aur/.SRCINFO) "
+            "will not run as root. Run this script as an unprivileged user — "
+            "see the 'bump' job in .github/workflows/build.yml."
+        )
+
+
 def regen_srcinfo(aur_dir: str):
+    require_non_root()
     r = run(["makepkg", "--printsrcinfo"], cwd=aur_dir)
     if r.returncode != 0:
         print("makepkg --printsrcinfo failed:", r.stderr)
@@ -87,6 +100,8 @@ def main() -> int:
     ap.add_argument("--pr", action="store_true",
                     help="push bump branch and open auto-merge PR")
     args = ap.parse_args()
+
+    require_non_root()
 
     rel = api(f"/repos/{REPO}/releases/latest")
     tag = rel["tag_name"]
