@@ -148,7 +148,9 @@ def main() -> int:
     gh_repo = os.environ["GH_REPO"]
     push_url = f"https://x-access-token:{os.environ['GH_TOKEN']}@github.com/{gh_repo}.git"
 
-    run(["git", "checkout", "-b", branch])
+    # -B (not -b): a previous run may have left the branch behind after
+    # failing further down, and re-runs must not die on "branch exists".
+    run(["git", "checkout", "-B", branch])
     run(["git", "config", "user.email", "jabla@users.noreply.github.com"])
     run(["git", "config", "user.name", "hermes-agent-bin CI"])
     run(["git", "add", "PKGBUILD", "aur/PKGBUILD", "aur/.SRCINFO"])
@@ -156,7 +158,9 @@ def main() -> int:
     if r.returncode != 0:
         print("commit failed:", r.stderr)
         return 1
-    r = run(["git", "push", "-u", push_url, f"HEAD:{branch}"])
+    # --force-safe: this branch is owned by the bump job and only ever carries
+    # this one bump commit; retries after a partial run must be able to reset it.
+    r = run(["git", "push", "--force", "-u", push_url, f"HEAD:{branch}"])
     if r.returncode != 0:
         print("push failed:", r.stderr)
         return 1
