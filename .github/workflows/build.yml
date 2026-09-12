@@ -170,21 +170,43 @@ jobs:
       - name: Create GitHub Release (skip if tag exists)
         env:
           GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REPO: NousResearch/hermes-agent
         run: |
           set -euo pipefail
           PKGVER=$(grep -oP '(?<=^pkgver=).*' PKGBUILD)
           PKGREL=$(grep -oP '(?<=^pkgrel=).*' PKGBUILD)
           UPSTREAM=$(grep -oP '(?<=^_pkgver_tag=).*' PKGBUILD)
+          UPSTREAM_COMMIT=$(grep -oP '(?<=^_commit=).*' PKGBUILD)
           TAG="v${PKGVER}-${PKGREL}"
           FILE=$(ls pkg/*.pkg.tar.zst)
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, skipping"
-          else
-            gh release create "$TAG" "$FILE" \
-              --title "hermes-agent-bin ${PKGVER}-${PKGREL}" \
-              --notes "Prebuilt Arch package from upstream source tag ${UPSTREAM}"
-            echo "Release created: $TAG"
+            exit 0
           fi
+          # Previous upstream tag, for the compare link. Best effort only: never
+          # fail the release because upstream's release list looks unexpected.
+          PREV=$(gh api "repos/${UPSTREAM_REPO}/releases?per_page=100" \
+                   | python3 -c 'import json,sys; t=[r["tag_name"] for r in json.load(sys.stdin)]; c=sys.argv[1]; i=t.index(c) if c in t else -1; print(t[i+1] if 0 <= i and i+1 < len(t) else "")' "$UPSTREAM" \
+                   2>/dev/null || true)
+          {
+            printf 'Prebuilt Arch package `%s-%s`, re-wrapped from the upstream source tag `%s` — nothing is compiled at install time.\n\n' \
+              "$PKGVER" "$PKGREL" "$UPSTREAM"
+            printf -- '- [Upstream release %s](https://github.com/%s/releases/tag/%s)\n' \
+              "$UPSTREAM" "$UPSTREAM_REPO" "$UPSTREAM"
+            if [ -n "$PREV" ]; then
+              printf -- '- [Upstream changes %s -> %s](https://github.com/%s/compare/%s...%s)\n' \
+                "$PREV" "$UPSTREAM" "$UPSTREAM_REPO" "$PREV" "$UPSTREAM"
+            else
+              printf -- '- [Upstream changes](https://github.com/%s/releases)\n' "$UPSTREAM_REPO"
+            fi
+            printf -- '\nUpstream commit: `%s`\nArtifact sha256: `%s`\n' \
+              "$UPSTREAM_COMMIT" "$(sha256sum "$FILE" | cut -d' ' -f1)"
+          } > /tmp/notes.md
+          cat /tmp/notes.md
+          gh release create "$TAG" "$FILE" \
+            --title "hermes-agent-bin ${PKGVER}-${PKGREL}" \
+            --notes-file /tmp/notes.md
+          echo "Release created: $TAG"
 
   aur-sync:
     runs-on: ubuntu-latest
