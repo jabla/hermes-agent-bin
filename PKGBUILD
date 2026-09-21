@@ -8,10 +8,10 @@
 pkgname=hermes-agent-bin
 _pkgver_tag=v2026.9.14
 _commit=345cd2b057a452236de401d3534b8502a7465e8d
-_tagver=${_pkgver_tag#v}           # 2026.8.31 — GitHub strips the leading v from the archive dir
+_tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 pkgver=0.21.3
-pkgrel=1
+pkgrel=2
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'

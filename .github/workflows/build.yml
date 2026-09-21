@@ -25,8 +25,11 @@ jobs:
   # checks and the push that follows the merge.
   # ---------------------------------------------------------------------------
   bump:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.bump)
+    # The schedule only bumps the canonical repository; copies (forks, a CI
+    # test repository) bump on manual dispatch only and idle for free.
+    if: (github.event_name == 'schedule' && github.repository == 'jabla/hermes-agent-bin') || (github.event_name == 'workflow_dispatch' && inputs.bump)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container:
       image: archlinux:latest
     permissions:
@@ -39,33 +42,40 @@ jobs:
         run: pacman -Syu --noconfirm --needed base-devel git github-cli python curl
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The bump pushes with BUMP_TOKEN in the push URL. A persisted
+          # workflow token (an auth header for github.com) would take
+          # precedence and push as github-actions[bot] instead.
+          persist-credentials: false
 
-      # Fail loudly when the PAT is missing or expired: the run then aborts
-      # here instead of silently opening a bot-authored PR that nobody can
-      # auto-merge and that never triggers the release pipeline.
+      # Fail loudly when the PAT is missing or no longer valid: the run then
+      # aborts here instead of opening a PR nobody can auto-merge. The workflow
+      # token is no fallback — a PR opened with it is bot-authored, its checks
+      # need manual approval and its merge never triggers the release pipeline.
       - name: Check the bump token
         env:
-          GH_TOKEN: ${{ secrets.BUMP_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.BUMP_TOKEN }}
         run: |
           set -euo pipefail
-          login=$(gh api /user --jq .login)
-          echo "bump token identity: $login"
-          if [ "$login" = "github-actions[bot]" ]; then
-            echo "::warning::BUMP_TOKEN is unset or invalid for PR use — the bump PR will be bot-authored, its checks will need manual approval and the merge will not trigger build/release/aur-sync"
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::BUMP_TOKEN secret is not set — store a fine-grained PAT (Contents + Pull requests: read/write) with: gh secret set BUMP_TOKEN"
+            exit 1
           fi
+          if ! login=$(gh api /user --jq .login 2>&1); then
+            echo "::error::GitHub rejects BUMP_TOKEN (revoked?): $login"
+            exit 1
+          fi
+          echo "bump token identity: $login"
 
       - name: Bump PKGBUILD + aur/ and open auto-merge PR
         env:
-          # Prefer the BUMP_TOKEN PAT over the workflow token. A PR opened with
-          # GITHUB_TOKEN is authored by github-actions[bot], and GitHub then
-          # holds its pull_request runs in "action_required" (nothing runs until
-          # a human approves) — and the merge auto-merge performs afterwards is
-          # token-attributed, so the follow-up push run never fires and
-          # release/aur-sync silently never run. With a PAT the PR is
-          # user-authored, checks run on their own and the merge triggers the
-          # push pipeline. Falls back to the workflow token when unset.
-          GH_TOKEN: ${{ secrets.BUMP_TOKEN || github.token }}
+          # The BUMP_TOKEN PAT, never the workflow token (see the check above).
+          GH_TOKEN: ${{ secrets.BUMP_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          # Only for the script's read-only GitHub API calls (upstream release
+          # and tag): unauthenticated calls share 60/hour per runner IP and
+          # fail with "HTTP Error 403: rate limit exceeded".
+          UPSTREAM_API_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # makepkg refuses to run as root, and the bump regenerates
@@ -76,6 +86,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           runuser -u bumper -- env HOME=/home/bumper \
             GH_TOKEN="$GH_TOKEN" GH_REPO="$GH_REPO" \
+            UPSTREAM_API_TOKEN="$UPSTREAM_API_TOKEN" \
             python3 scripts/bump-pkgbuild.py --pr
 
   # ---------------------------------------------------------------------------
@@ -86,34 +97,71 @@ jobs:
     # not on schedule; also skipped when a manual dispatch only runs the bump
     if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.bump)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     container:
       image: archlinux:latest
     steps:
-      - name: Install build toolchain (Arch container)
-        run: |
-          pacman -Syu --noconfirm --needed \
-            base-devel git curl \
-            nodejs npm uv rsync \
-            ripgrep ffmpeg nss atk at-spi2-core cups libdrm libxkbcommon \
-            mesa pango cairo alsa-lib
+      - name: Install base toolchain (Arch container)
+        run: pacman -Syu --noconfirm --needed base-devel git
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Validate aur/.SRCINFO matches aur/PKGBUILD
-        run: |
-          useradd -m validator
-          chown -R validator:validator "$GITHUB_WORKSPACE"
-          runuser -u validator -- sh -c 'cd "$GITHUB_WORKSPACE/aur" && makepkg --printsrcinfo | diff -q - .SRCINFO'
-
-      - name: Build package (non-root makepkg)
+      - name: Validate aur/.SRCINFO and the wrapper's metadata
         run: |
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- sh -c 'cd "$GITHUB_WORKSPACE/aur" && makepkg --printsrcinfo | diff -q - .SRCINFO'
+          runuser -u builder -- bash "$GITHUB_WORKSPACE/scripts/check-metadata.sh"
+
+      - name: Install dependencies declared in PKGBUILD
+        run: |
+          # Read them from PKGBUILD itself, so CI installs exactly what
+          # makepkg -s would and cannot drift from a hand-kept list.
+          cd "$GITHUB_WORKSPACE"
+          mapfile -t deps < <(runuser -u builder -- makepkg --printsrcinfo |
+            sed -nE 's/^\t(depends|makedepends|checkdepends) = //p')
+          pacman -S --noconfirm --needed "${deps[@]}"
+
+      - name: Build package (non-root makepkg)
+        run: |
           cd "$GITHUB_WORKSPACE"
           runuser -u builder -- makepkg -f --noconfirm
 
       - name: Show result
         run: ls -lh "$GITHUB_WORKSPACE"/*.pkg.tar.zst
+
+      # AUR users install aur/PKGBUILD re-wrapping this artifact, not the
+      # artifact itself, so build the wrapper from it the way their makepkg
+      # does (the file in place of the download) and compare the payloads.
+      - name: Build the AUR wrapper from this artifact
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          artifact=$(ls hermes-agent-bin-*-x86_64.pkg.tar.zst)
+          prebuilt=$(sed -nE 's/^\tnoextract = //p' aur/.SRCINFO)
+          sha=$(sha256sum "$artifact" | cut -d' ' -f1)
+          work=$(mktemp -d)
+          cp aur/PKGBUILD "$work/"
+          cp "$artifact" "$work/$prebuilt"
+          # Pin the artifact's sha the way aur-sync does for the release.
+          sed -i -E "s|^(sha256sums=\(')[0-9a-f]{64}('\))|\1${sha}\2|" "$work/PKGBUILD"
+          grep -qx "sha256sums=('${sha}')" "$work/PKGBUILD"
+          chown -R builder:builder "$work"
+          # Twice: a rebuild must still find the download intact. A wrapper
+          # whose download is named like its own output overwrites it.
+          runuser -u builder -- sh -c 'cd "$1" && makepkg -f --noconfirm && makepkg -f --noconfirm' sh "$work"
+          # Same files, modes, links and sha256 digests as the artifact;
+          # only mtimes and the package metadata differ.
+          manifest() {
+            bsdtar -xOf "$1" .MTREE | gzip -dc |
+              grep -vE '^\./\.(BUILDINFO|PKGINFO) ' | sed -E 's/ time=[0-9.]+//'
+          }
+          if ! diff -u <(manifest "$artifact") <(manifest "$work/$artifact") > /tmp/wrapper.diff; then
+            echo "::error::the AUR wrapper does not install the artifact's payload unchanged"
+            head -n 60 /tmp/wrapper.diff
+            exit 1
+          fi
+          echo "WRAPPER-OK: aur/PKGBUILD reproduces the artifact's payload ($(manifest "$artifact" | wc -l) manifest lines)"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -121,18 +169,20 @@ jobs:
           name: pkg
           path: '*.pkg.tar.zst'
           if-no-files-found: error
+          # Only smoke and release of this run need it; the release keeps the file.
+          retention-days: 3
 
   smoke:
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 20
     container:
       image: archlinux:latest
     steps:
-      - name: Install runtime deps
-        run: |
-          pacman -Syu --noconfirm --needed \
-            nodejs uv ripgrep ffmpeg git curl \
-            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib
+      # Runtime dependencies are deliberately not preinstalled: pacman -U has
+      # to resolve them from the package's own depends=().
+      - name: Sync the package databases
+        run: pacman -Syu --noconfirm
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -145,18 +195,47 @@ jobs:
       - name: Import + CLI smoke test
         run: |
           set -euo pipefail
-          /opt/hermes-agent/venv/bin/python -c 'import hermes_cli.main; print("IMPORT-OK")'
-          hermes --help > /tmp/hermes-help.log 2>&1
-          echo "SMOKE-OK: hermes --help exited 0"
+          py=/opt/hermes-agent/venv/bin/python
+          "$py" -c 'import hermes_cli.main; print("IMPORT-OK")'
+          # The venv must run on the bundled interpreter, not on the build
+          # host's uv-managed one (that path does not exist here).
+          base=$("$py" -c 'import sys; print(sys.base_prefix)')
+          if [ "$base" != /opt/hermes-agent/python ]; then
+            echo "SMOKE-FAIL: the venv's base_prefix is $base, not /opt/hermes-agent/python"
+            exit 1
+          fi
+          # The app must be the version the package claims to be.
+          pkgver=$(pacman -Q hermes-agent-bin | cut -d' ' -f2)
+          pkgver=${pkgver%-*}
+          appver=$("$py" -c 'import hermes_cli; print(hermes_cli.__version__)')
+          if [ "$appver" != "$pkgver" ]; then
+            echo "SMOKE-FAIL: hermes_cli reports version $appver, the package is $pkgver"
+            exit 1
+          fi
+          # Without the prebuilt bundles the CLI would try an npm build in the
+          # root-owned /opt tree.
+          for f in hermes_cli/tui_dist/entry.js hermes_cli/web_dist/index.html; do
+            if [ ! -s "/opt/hermes-agent/$f" ]; then
+              echo "SMOKE-FAIL: /opt/hermes-agent/$f is missing"
+              exit 1
+            fi
+          done
+          if ! hermes --help > /tmp/hermes-help.log 2>&1; then
+            echo "SMOKE-FAIL: hermes --help failed"
+            tail -n 40 /tmp/hermes-help.log
+            exit 1
+          fi
+          echo "SMOKE-OK: hermes ${appver} runs on the bundled python and answers --help"
 
   # ---------------------------------------------------------------------------
-  # Release + AUR sync: only after a merge to main or manual dispatch
-  # (never from pull_request — no secrets/releases on untrusted code).
+  # Release + AUR sync: only after a merge to main or a manual dispatch ON main
+  # (never from pull_request or another branch — no releases of unreviewed code).
   # ---------------------------------------------------------------------------
   release:
     runs-on: ubuntu-latest
     needs: [build, smoke]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -203,7 +282,9 @@ jobs:
               "$UPSTREAM_COMMIT" "$(sha256sum "$FILE" | cut -d' ' -f1)"
           } > /tmp/notes.md
           cat /tmp/notes.md
+          # --target: tag the commit that was built, not whatever main is now.
           gh release create "$TAG" "$FILE" \
+            --target "$GITHUB_SHA" \
             --title "hermes-agent-bin ${PKGVER}-${PKGREL}" \
             --notes-file /tmp/notes.md
           echo "Release created: $TAG"
@@ -211,35 +292,69 @@ jobs:
   aur-sync:
     runs-on: ubuntu-latest
     needs: release
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    # Keep AUR_SSH_KEY as a secret of this environment, restricted to main
+    # (Settings → Environments): pull requests from branches of this
+    # repository can read repository-level secrets.
+    environment: aur
+    # One publisher at a time; the main-HEAD check below drops stale runs.
+    concurrency:
+      group: aur-publish
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Compute release artifact sha256 and pin it into aur/
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           PKGVER=$(grep -oP '(?<=^pkgver=).*' PKGBUILD)
           PKGREL=$(grep -oP '(?<=^pkgrel=).*' PKGBUILD)
           FILE="hermes-agent-bin-${PKGVER}-${PKGREL}-x86_64.pkg.tar.zst"
-          URL="https://github.com/${{ github.repository }}/releases/download/v${PKGVER}-${PKGREL}/${FILE}"
-          curl -fsSL -o /tmp/pkg.pkg.tar.zst "$URL"
+          # Authenticated download: also works in a private copy of this repo.
+          gh release download "v${PKGVER}-${PKGREL}" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$FILE" --output /tmp/pkg.pkg.tar.zst
           SHA=$(sha256sum /tmp/pkg.pkg.tar.zst | cut -d' ' -f1)
           sed -i -E "s|^(sha256sums=\(')[0-9a-f]{64}('\))|\1${SHA}\2|" aur/PKGBUILD
           sed -i -E "s|^([[:space:]]*sha256sums = )[0-9a-f]{64}|\1${SHA}|" aur/.SRCINFO
+          # sed succeeds even when nothing matched: never publish a stale sum.
+          grep -qx "sha256sums=('${SHA}')" aur/PKGBUILD
+          grep -qxP "\tsha256sums = ${SHA}" aur/.SRCINFO
           echo "artifact sha256=${SHA}"
 
-      - name: Push aur/ to AUR git (publish)
+      - name: Push aur/ to AUR git (publish; dry run in copies of this repo)
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           set -euo pipefail
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur_ci && chmod 600 ~/.ssh/aur_ci
-          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          # A slower run for an older commit must not overwrite what a newer
+          # main has already published.
+          MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$MAIN" != "$GITHUB_SHA" ]; then
+            echo "main moved on to ${MAIN}; not publishing ${GITHUB_SHA}"
+            exit 0
+          fi
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::error::AUR_SSH_KEY is empty — store the AUR key as a secret of the aur environment"
+            exit 1
+          fi
           git config --global user.name "hermes-agent-bin CI"
           git config --global user.email "jabla@users.noreply.github.com"
           rm -rf /tmp/aur
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_ci -o IdentitiesOnly=yes" \
+          # Only the canonical repository publishes. Copies (forks, a CI test
+          # repository) clone the public AUR repository read-only and show the
+          # diff they would push.
+          if [ "$GITHUB_REPOSITORY" = jabla/hermes-agent-bin ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur_ci && chmod 600 ~/.ssh/aur_ci
+            ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+            export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_ci -o IdentitiesOnly=yes"
             git clone ssh://aur@aur.archlinux.org/hermes-agent-bin.git /tmp/aur
+          else
+            git clone https://aur.archlinux.org/hermes-agent-bin.git /tmp/aur
+          fi
           cp aur/PKGBUILD aur/.SRCINFO /tmp/aur/
           cd /tmp/aur
           PKGVER=$(grep -oP '(?<=^pkgver=).*' PKGBUILD)
@@ -250,9 +365,11 @@ jobs:
           git add PKGBUILD .SRCINFO
           if git diff --cached --quiet; then
             echo "AUR package up to date, nothing to push"
+          elif [ "$GITHUB_REPOSITORY" != jabla/hermes-agent-bin ]; then
+            echo "DRY RUN in ${GITHUB_REPOSITORY}: would push ${PKGVER}-${PKGREL} to the AUR:"
+            git diff --cached
           else
             git commit -m "Update to ${PKGVER}-${PKGREL}"
-            GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_ci -o IdentitiesOnly=yes" \
-              git push origin master
+            git push origin master
             echo "AUR updated to ${PKGVER}-${PKGREL}"
           fi
