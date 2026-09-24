@@ -6,11 +6,11 @@
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
 # installed package never compiles anything.
 pkgname=hermes-agent-bin
-_pkgver_tag=v2026.9.21
-_commit=d337b736aa1e8ebecfab043842d13e4a2d2f48a3
+_pkgver_tag=v2026.9.24
+_commit=f97608f178d1ffeca59860195ab7da295f7c8e5f
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
-pkgver=0.21.4
+pkgver=0.21.5
 pkgrel=1
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
@@ -28,7 +28,7 @@ options=('!debug')
 source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
 )
-sha256sums=('c38cd7639707fe695f94ecd948ee7a9ce7de0c57461e39fb022966d79a692a65')
+sha256sums=('15b15ce4e6ec8ea424a081823709d1e17f0943e7b42b59597d24ebb94cbd1742')
 
 _extract_dir() {
   echo "${srcdir}/hermes-agent-${_tagver}"
