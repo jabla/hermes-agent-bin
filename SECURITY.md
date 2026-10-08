@@ -18,9 +18,8 @@ vulnerabilities there.
 
 - Builds run in a fresh `archlinux:latest` container per run; the base image
   is not pinned to a digest (rolling distro).
-- The package bundles a standalone CPython 3.11 that `uv python install`
-  downloads in the build; uv checks it against the checksums it ships, so the
-  interpreter follows the container's `uv` version. Python dependencies come
+- The venv runs on Arch's `python` package (pinned to one minor version in
+  `depends=()`), so interpreter fixes arrive with the system's updates. Python dependencies come
   from upstream's `uv.lock` (`uv sync --locked`), Node dependencies from its
   `package-lock.json` (`npm ci --ignore-scripts`).
 - GitHub Actions are pinned to commit SHAs (official `actions/*`), kept current by Dependabot (weekly, grouped).

@@ -103,11 +103,18 @@ jobs:
     timeout-minutes: 45
     container:
       image: archlinux:latest
+    outputs:
+      # The upstream commit the package is built from, for smoke's version check.
+      commit: ${{ steps.upstream.outputs.commit }}
     steps:
       - name: Install base toolchain (Arch container)
         run: pacman -Syu --noconfirm --needed base-devel git
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read the pinned upstream commit
+        id: upstream
+        run: echo "commit=$(sed -nE 's/^_commit=([0-9a-f]{40})$/\1/p' PKGBUILD)" >> "$GITHUB_OUTPUT"
 
       - name: Validate aur/.SRCINFO and the wrapper's metadata
         run: |
@@ -196,25 +203,38 @@ jobs:
         run: pacman -U --noconfirm pkg/*.pkg.tar.zst
 
       - name: Import + CLI smoke test
+        env:
+          COMMIT: ${{ needs.build.outputs.commit }}
         run: |
           set -euo pipefail
           py=/opt/hermes-agent/venv/bin/python
           "$py" -c 'import hermes_cli.main; print("IMPORT-OK")'
-          # The venv must run on the bundled interpreter, not on the build
-          # host's uv-managed one (that path does not exist here).
+          # The venv must run on Arch's python that depends=() pulled in, not
+          # on an interpreter of the build host (no such path here).
           base=$("$py" -c 'import sys; print(sys.base_prefix)')
-          if [ "$base" != /opt/hermes-agent/python ]; then
-            echo "SMOKE-FAIL: the venv's base_prefix is $base, not /opt/hermes-agent/python"
+          if [ "$base" != /usr ]; then
+            echo "SMOKE-FAIL: the venv's base_prefix is $base, not /usr"
             exit 1
           fi
-          # The app must be the version the package claims to be.
+          # Since v0.21.6 the version comes from the install stamp written in
+          # package(). Check what users see: `hermes --version` reads the stamp
+          # through upstream's version_info, which ignores a stamp with an
+          # unusable commit and then prints "vunknown".
+          if [ "${#COMMIT}" -ne 40 ]; then
+            echo "SMOKE-FAIL: build passed no upstream commit ('$COMMIT')"
+            exit 1
+          fi
           pkgver=$(pacman -Q hermes-agent-bin | cut -d' ' -f2)
           pkgver=${pkgver%-*}
-          appver=$("$py" -c 'import hermes_cli; print(hermes_cli.__version__)')
-          if [ "$appver" != "$pkgver" ]; then
-            echo "SMOKE-FAIL: hermes_cli reports version $appver, the package is $pkgver"
-            exit 1
-          fi
+          version=$(hermes --version 2>&1)
+          version=${version%%$'\n'*}   # first line; no pipe to head under pipefail
+          case "$version" in
+            "Hermes Agent v${pkgver} "*"upstream ${COMMIT:0:8}"*) ;;
+            *)
+              echo "SMOKE-FAIL: hermes --version says '$version', expected v${pkgver} from upstream ${COMMIT:0:8}"
+              exit 1
+              ;;
+          esac
           # Without the prebuilt bundles the CLI would try an npm build in the
           # root-owned /opt tree.
           for f in hermes_cli/tui_dist/entry.js hermes_cli/web_dist/index.html; do
@@ -228,7 +248,7 @@ jobs:
             tail -n 40 /tmp/hermes-help.log
             exit 1
           fi
-          echo "SMOKE-OK: hermes ${appver} runs on the bundled python and answers --help"
+          echo "SMOKE-OK: hermes ${pkgver} runs on $("$py" -c 'import platform; print("python", platform.python_version())') and answers --help"
 
   # ---------------------------------------------------------------------------
   # Release + AUR sync: only after a merge to main or a manual dispatch ON main

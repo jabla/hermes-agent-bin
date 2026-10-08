@@ -6,17 +6,19 @@
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
 # installed package never compiles anything.
 pkgname=hermes-agent-bin
-_pkgver_tag=v2026.9.24
-_commit=f97608f178d1ffeca59860195ab7da295f7c8e5f
+_pkgver_tag=v0.21.6
+_commit=818c13be1dc4fd28987e1e881a9408224afd4535
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
-pkgver=0.21.5
+_pyver=3.14                        # Arch's python minor; keep depends=() in step
+pkgver=0.21.6
 pkgrel=1
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
 license=('MIT')
 depends=(
+  'python>=3.14' 'python<3.15'   # the minor in _pyver
   'nodejs' 'uv' 'ripgrep' 'ffmpeg'
   'nss' 'atk' 'at-spi2-core' 'cups' 'libdrm' 'libxkbcommon' 'mesa' 'pango'
   'cairo' 'alsa-lib' 'git' 'curl'
@@ -28,7 +30,7 @@ options=('!debug')
 source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
 )
-sha256sums=('15b15ce4e6ec8ea424a081823709d1e17f0943e7b42b59597d24ebb94cbd1742')
+sha256sums=('1ba3500cdbe876bb9d347b3c12f41c591a421293eac58faba23571287dfe1cf8')
 
 _extract_dir() {
   echo "${srcdir}/hermes-agent-${_tagver}"
@@ -46,13 +48,14 @@ build() {
   npm run build:ink --workspace ui-tui
   npm run build --workspace ui-tui
 
-  # Upstream requires-python is ">=3.11,<3.14", but Arch dropped python311
-  # from its repos (only python 3.14 remains). Bundle a standalone CPython
-  # 3.11 via uv so the package is self-contained and needs no system python.
-  uv python install 3.11
-  UV_PYTHON_PREFERENCE=only-managed uv venv \
+  # The venv runs on Arch's python (upstream supports 3.14 since v0.21.6,
+  # requires-python ">=3.11,<3.15"). A venv only works on the minor version
+  # it was built for, so depends=() pins it: when Arch moves python to the
+  # next minor, pacman holds that update back until this package follows
+  # (to the new minor if upstream supports it, else to a bundled CPython).
+  UV_PYTHON_DOWNLOADS=never uv venv \
     --clear \
-    --python 3.11 \
+    --python "/usr/bin/python${_pyver}" \
     --relocatable \
     venv
   UV_PYTHON_DOWNLOADS=never \
@@ -87,21 +90,30 @@ package() {
     --exclude='build' \
     . "$_optdir/"
 
-  # Bundle the standalone CPython into the package so the venv is fully
-  # self-contained. uv's venv symlinks bin/python to the uv-managed interpreter
-  # at an absolute path, which breaks after the package moves to /opt. Copy the
-  # interpreter (bin/ + lib/) in and repoint bin/python relative so base + venv
-  # relocate together. Skip include/ (headers) and share/ (man pages) — not
-  # needed at runtime.
-  _pybin="$(UV_PYTHON_PREFERENCE=only-managed uv python find 3.11)"
-  _pyhome="$(dirname "$(dirname "$_pybin")")"
-  install -d "$_optdir/python"
-  cp -a "$_pyhome"/bin "$_pyhome"/lib "$_optdir/python/"
-  rm -f "$_optdir/venv/bin/python"
-  ln -s ../../python/bin/python3.11 "$_optdir/venv/bin/python"
-  sed -i "s|^home = .*|home = /opt/hermes-agent/python/bin|" "$_optdir/venv/pyvenv.cfg"
-
   echo "console.log('skipping build, using prebuilt dist/entry.js')" > "$_optdir/ui-tui/scripts/build.mjs"
+
+  # The web build's freshness manifest (new in v0.21.6) records its inputs by
+  # absolute build path; point it at the installed tree instead of $srcdir.
+  sed -i "s|$(_extract_dir)|/opt/${_optname}|g" "$_optdir/hermes_cli/web_dist/hermes-build.json"
+
+  # Since v0.21.6 the version comes from a build stamp beside the code
+  # (pyproject says 0.0.0; without the stamp `hermes --version` reports
+  # "unknown"). Upstream's packager script writes it. "external" keeps hermes
+  # from syncing the root-owned venv and marks the tree as not its own; there
+  # is no steward value for distro packages yet, so `hermes update` still
+  # refuses with a generic message. The archive's mtimes are the commit time.
+  # The script fills gaps from CI variables (GITHUB_REF_NAME, ...) and from
+  # git, which would find this packaging repository around $srcdir: start it
+  # with a bare environment and keep git inside $srcdir.
+  env -i PATH="$PATH" GIT_CEILING_DIRECTORIES="$srcdir" \
+    venv/bin/python scripts/write_install_stamp.py \
+    --output "$_optdir/install-stamp.json" \
+    --commit "$_commit" \
+    --commit-date "$(stat -c %Y pyproject.toml)" \
+    --base-version "$pkgver" \
+    --distance 0 \
+    --source ci \
+    --update-mechanism external
 
   # Ship the prebuilt TUI into hermes_cli/tui_dist/ so _find_bundled_tui()
   # finds it and skips the npm install step (which would fail with EACCES on
@@ -113,10 +125,10 @@ package() {
     cp -a ui-tui/dist/* "$_tuidir/"
   fi
 
-  install -d "$_optdir/venv/lib/python3.11/site-packages"
+  install -d "$_optdir/venv/lib/python${_pyver}/site-packages"
   {
     echo "import sys; sys.path.insert(0, \"/opt/${_optname}\")"
-  } > "$_optdir/venv/lib/python3.11/site-packages/hermes.pth"
+  } > "$_optdir/venv/lib/python${_pyver}/site-packages/hermes.pth"
 
   install -d "$pkgdir/usr/bin"
   {
