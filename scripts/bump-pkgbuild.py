@@ -197,15 +197,20 @@ def main() -> int:
 
     rel = api(f"/repos/{REPO}/releases/latest")
     tag = rel["tag_name"]
-    # Release names read "Hermes Agent v0.21.3 (v2026.9.14)": take the first
-    # vX.Y.Z that is not the date tag itself, whatever order upstream uses.
-    date_version = tag.lstrip("v")
+    # Up to v0.21.5 upstream tagged by date and named releases "Hermes Agent
+    # v0.21.3 (v2026.9.14)"; since v0.21.6 the tag is the version itself and
+    # the name reads "Hermes Agent v0.21.6". Take the first vX.Y.Z in the name
+    # that is not the date tag, whatever order upstream uses.
+    date_tag = re.fullmatch(r"v(\d{4}\.\d+\.\d+(?:\.\d+)?)", tag)
     candidates = [v for v in re.findall(r"\bv(\d+\.\d+\.\d+)\b", rel.get("name") or "")
-                  if not date_version.startswith(v)]
+                  if not (date_tag and date_tag.group(1).startswith(v))]
     if not candidates:
         print(f"cannot parse version from release name: {rel.get('name')!r}")
         return 2
     version = candidates[0]
+    if not date_tag and tag != f"v{version}":
+        print(f"release name {rel.get('name')!r} does not match its tag {tag}")
+        return 2
 
     pkg = open("PKGBUILD").read()
     cur_tag = re.search(r"(?m)^_pkgver_tag=(.+)$", pkg).group(1)
