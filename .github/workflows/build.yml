@@ -26,8 +26,11 @@ jobs:
   # ---------------------------------------------------------------------------
   bump:
     # The schedule only bumps the canonical repository; copies (forks, a CI
-    # test repository) bump on manual dispatch only and idle for free.
-    if: (github.event_name == 'schedule' && github.repository == 'jabla/hermes-agent-bin') || (github.event_name == 'workflow_dispatch' && inputs.bump)
+    # test repository) bump on manual dispatch only and idle for free. The
+    # repository variable BUMP_PAUSED=true pauses the schedule there too,
+    # e.g. while packaging changes are in progress; a manual dispatch with
+    # "bump" still runs.
+    if: (github.event_name == 'schedule' && github.repository == 'jabla/hermes-agent-bin' && vars.BUMP_PAUSED != 'true') || (github.event_name == 'workflow_dispatch' && inputs.bump)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     container:
