@@ -161,7 +161,8 @@ def check_reference_drift() -> list[str]:
     """Report when the AUR source package changed beyond its version fields.
 
     PKGBUILD is adapted from it: build(), package(), the launcher and its
-    environment follow the reference, apart from the bundled CPython. A
+    environment follow the reference, apart from the Python version and
+    the install stamp written in package(). A
     change there usually has to be ported. Warns instead of failing (the
     reference may simply have been reworded) and never copies anything.
     """
