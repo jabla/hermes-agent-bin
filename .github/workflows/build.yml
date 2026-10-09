@@ -95,10 +95,42 @@ jobs:
   # ---------------------------------------------------------------------------
   # Build + smoke: run for PRs (merge gate), pushes to main (after merge) and
   # manual dispatch. Never on schedule (bump job handles that).
+  # A push whose pkgver-pkgrel is already released (CI, scripts, docs) skips
+  # them: its PR run built and smoked the change, and release would skip.
   # ---------------------------------------------------------------------------
-  build:
+  plan:
     # not on schedule; also skipped when a manual dispatch only runs the bump
     if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.bump)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+    steps:
+      - name: Check whether the pushed version is released already
+        id: release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # PKGBUILD of the pushed commit, read without a checkout.
+          pkgbuild=$(gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${GITHUB_REPOSITORY}/contents/PKGBUILD?ref=${GITHUB_SHA}")
+          PKGVER=$(grep -oP '(?<=^pkgver=).*' <<<"$pkgbuild")
+          PKGREL=$(grep -oP '(?<=^pkgrel=).*' <<<"$pkgbuild")
+          TAG="v${PKGVER}-${PKGREL}"
+          # A failed lookup counts as not released: build as before.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG exists: skipping build, smoke and release"
+            echo released=true >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $TAG not found: building"
+            echo released=false >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.released != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
@@ -314,8 +346,10 @@ jobs:
 
   aur-sync:
     runs-on: ubuntu-latest
-    needs: release
-    if: github.ref == 'refs/heads/main'
+    needs: [plan, release]
+    # Also after a push that skipped the release (version already released):
+    # aur/ may have changed, and the artifact comes from the release anyway.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (needs.release.result == 'success' || needs.plan.outputs.released == 'true') }}
     timeout-minutes: 10
     # Keep AUR_SSH_KEY as a secret of this environment, restricted to main
     # (Settings → Environments): pull requests from branches of this
