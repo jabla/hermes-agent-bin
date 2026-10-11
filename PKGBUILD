@@ -130,6 +130,10 @@ package() {
     echo "import sys; sys.path.insert(0, \"/opt/${_optname}\")"
   } > "$_optdir/venv/lib/python${_pyver}/site-packages/hermes.pth"
 
+  # Readable for every user: the TUI build leaves ui-tui/dist at mode 700
+  # (since v0.21.6).
+  chmod -R a+rX "$_optdir"
+
   install -d "$pkgdir/usr/bin"
   {
     echo "#!/bin/bash"

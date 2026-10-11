@@ -6,8 +6,8 @@ This repository contains packaging automation for the upstream Hermes Agent
 CLI:
 
 - `PKGBUILD` / `aur/PKGBUILD` — recipes, no application code
-- `.github/workflows/build.yml` — CI pipeline (bump, build, smoke, release,
-  aur-sync)
+- `.github/workflows/build.yml` — CI pipeline (bump, plan, build, smoke,
+  release, aur-sync)
 - `scripts/` — bump automation and the metadata check
 
 The packaged application itself lives at

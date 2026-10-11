@@ -41,8 +41,17 @@ jobs:
       # block sets every unlisted scope to none.
       pull-requests: write
     steps:
+      # Retried: a mirror flake would otherwise fail the scheduled run.
       - name: Install toolchain (makepkg needed for .SRCINFO regeneration)
-        run: pacman -Syu --noconfirm --needed base-devel git github-cli python curl
+        run: |
+          for i in 1 2 3; do
+            pacman -Syu --noconfirm --needed base-devel git github-cli python curl && exit 0
+            if [ "$i" -lt 3 ]; then
+              echo "::warning::pacman failed (attempt $i of 3), retrying in 30 s"
+              sleep 30
+            fi
+          done
+          exit 1
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -99,7 +108,9 @@ jobs:
   # them: its PR run built and smoked the change, and release would skip.
   # ---------------------------------------------------------------------------
   plan:
-    # not on schedule; also skipped when a manual dispatch only runs the bump
+    # Not on schedule; also skipped when a manual dispatch only runs the bump.
+    # This also keeps build, smoke and release off those runs: build only
+    # runs when plan was not skipped.
     if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.bump)
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -114,8 +125,12 @@ jobs:
         run: |
           set -euo pipefail
           # PKGBUILD of the pushed commit, read without a checkout.
-          pkgbuild=$(gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${GITHUB_REPOSITORY}/contents/PKGBUILD?ref=${GITHUB_SHA}")
+          if ! pkgbuild=$(gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${GITHUB_REPOSITORY}/contents/PKGBUILD?ref=${GITHUB_SHA}"); then
+            echo "::warning::could not read PKGBUILD at ${GITHUB_SHA}: building"
+            echo released=false >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           PKGVER=$(grep -oP '(?<=^pkgver=).*' <<<"$pkgbuild")
           PKGREL=$(grep -oP '(?<=^pkgrel=).*' <<<"$pkgbuild")
           TAG="v${PKGVER}-${PKGREL}"
@@ -130,7 +145,9 @@ jobs:
 
   build:
     needs: plan
-    if: needs.plan.outputs.released != 'true'
+    # Skip only when plan reported an existing release. A failed plan must not
+    # skip build and smoke: skipped required checks count as passed.
+    if: ${{ !cancelled() && needs.plan.result != 'skipped' && needs.plan.outputs.released != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
@@ -217,6 +234,8 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     needs: build
+    # Explicit, or a failed plan would skip it despite a green build.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     timeout-minutes: 20
     container:
       image: archlinux:latest
@@ -267,6 +286,13 @@ jobs:
               exit 1
               ;;
           esac
+          # Everything under /opt must be readable for users who are not root.
+          unreadable=$(find /opt/hermes-agent \( -type d ! -perm -0005 \) -o \( -type f ! -perm -0004 \))
+          if [ -n "$unreadable" ]; then
+            echo "SMOKE-FAIL: not readable for other users:"
+            head -n 20 <<<"$unreadable"
+            exit 1
+          fi
           # Without the prebuilt bundles the CLI would try an npm build in the
           # root-owned /opt tree.
           for f in hermes_cli/tui_dist/entry.js hermes_cli/web_dist/index.html; do
@@ -289,7 +315,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     needs: [build, smoke]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.smoke.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     timeout-minutes: 10
     permissions:
       contents: write
