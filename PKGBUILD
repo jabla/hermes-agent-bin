@@ -12,7 +12,7 @@ _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
 pkgver=0.21.7
-pkgrel=1
+pkgrel=2
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
@@ -99,9 +99,8 @@ package() {
   # Since v0.21.6 the version comes from a build stamp beside the code
   # (pyproject says 0.0.0; without the stamp `hermes --version` reports
   # "unknown"). Upstream's packager script writes it. "external" keeps hermes
-  # from syncing the root-owned venv and marks the tree as not its own; there
-  # is no steward value for distro packages yet, so `hermes update` still
-  # refuses with a generic message. The archive's mtimes are the commit time.
+  # from syncing the root-owned venv and marks the tree as not its own. The
+  # archive's mtimes are the commit time.
   # The script fills gaps from CI variables (GITHUB_REF_NAME, ...) and from
   # git, which would find this packaging repository around $srcdir: start it
   # with a bare environment and keep git inside $srcdir.
@@ -114,6 +113,20 @@ package() {
     --distance 0 \
     --source ci \
     --update-mechanism external
+  # `distribution` names the steward that owns the tree; `hermes update` then
+  # refuses with "managed by pacman" before it tries to lock the root-owned
+  # tree. The script only offers upstream's own stewards, the runtime takes
+  # any name.
+  venv/bin/python - "$_optdir/install-stamp.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    stamp = json.load(f)
+stamp["distribution"] = "pacman"
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(stamp, f, indent=2)
+    f.write("\n")
+PY
 
   # Ship the prebuilt TUI into hermes_cli/tui_dist/ so _find_bundled_tui()
   # finds it and skips the npm install step (which would fail with EACCES on
