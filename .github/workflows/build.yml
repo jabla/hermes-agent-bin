@@ -286,6 +286,15 @@ jobs:
               exit 1
               ;;
           esac
+          # The stamp names pacman as the steward: `hermes update` must refuse
+          # with that, not try to lock or sync the root-owned tree.
+          rc=0
+          update=$(hermes update --check 2>&1) || rc=$?
+          if [ "$rc" -ne 2 ] || ! grep -q "managed by pacman" <<<"$update"; then
+            echo "SMOKE-FAIL: hermes update --check exited $rc without the pacman refusal:"
+            echo "$update"
+            exit 1
+          fi
           # Everything under /opt must be readable for users who are not root.
           unreadable=$(find /opt/hermes-agent \( -type d ! -perm -0005 \) -o \( -type f ! -perm -0004 \))
           if [ -n "$unreadable" ]; then
