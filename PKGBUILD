@@ -12,28 +12,40 @@ _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
 pkgver=0.21.7
-pkgrel=2
+pkgrel=3
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
 license=('MIT')
 depends=(
   'python>=3.14' 'python<3.15'   # the minor in _pyver
-  'nodejs' 'uv' 'ripgrep' 'ffmpeg'
+  'nodejs' 'npm' 'uv' 'ripgrep' 'ffmpeg'
   'nss' 'atk' 'at-spi2-core' 'cups' 'libdrm' 'libxkbcommon' 'mesa' 'pango'
   'cairo' 'alsa-lib' 'git' 'curl'
 )
-makedepends=('npm' 'rsync')
+makedepends=('rsync')
 conflicts=('hermes-agent')
 provides=('hermes-agent')
 options=('!debug')
 source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
+  'keep-venv-interpreter.patch'
+  'system-tools.py'
 )
-sha256sums=('fcf5fc29d3088764a5a293910f75f43dc736b5655ed410d7339cf94cc1462459')
+sha256sums=('fcf5fc29d3088764a5a293910f75f43dc736b5655ed410d7339cf94cc1462459'
+            '8a371d1fb5e0a1fb7a20eeb1f0f4250a70cc8ce26aef47fc19fdc77af88a7d52'
+            '5950d73a49526767dfac20084d8c5597b7ebf5c16e7bff99e31dc4d7fe0d139d')
 
 _extract_dir() {
   echo "${srcdir}/hermes-agent-${_tagver}"
+}
+
+prepare() {
+  cd "$(_extract_dir)"
+
+  # --fuzz=0: a hunk whose context drifted must fail loudly instead of being
+  # applied at a guessed location (offsets are still accepted).
+  patch --batch --fuzz=0 -Np1 -i "${srcdir}/keep-venv-interpreter.patch"
 }
 
 build() {
@@ -116,17 +128,23 @@ package() {
   # `distribution` names the steward that owns the tree; `hermes update` then
   # refuses with "managed by pacman" before it tries to lock the root-owned
   # tree. The script only offers upstream's own stewards, the runtime takes
-  # any name.
-  venv/bin/python - "$_optdir/install-stamp.json" <<'PY'
+  # any name. `runtimeDir` points pm at the system-tools store below; the
+  # runtime resolves it as given (not relative to the stamp), so absolute.
+  venv/bin/python - "$_optdir/install-stamp.json" "/opt/${_optname}/system-store/tools" <<'PY'
 import json, sys
-path = sys.argv[1]
+path, store = sys.argv[1:]
 with open(path, encoding="utf-8") as f:
     stamp = json.load(f)
 stamp["distribution"] = "pacman"
+stamp["runtimeDir"] = store
 with open(path, "w", encoding="utf-8") as f:
     json.dump(stamp, f, indent=2)
     f.write("\n")
 PY
+
+  # pm's store of the tools depends=() provides: symlinks into /usr/bin under
+  # the pins of pm/lock.json (see system-tools.py).
+  venv/bin/python -B "$srcdir/system-tools.py" "$_optdir" "$_optdir/system-store/tools"
 
   # Ship the prebuilt TUI into hermes_cli/tui_dist/ so _find_bundled_tui()
   # finds it and skips the npm install step (which would fail with EACCES on
