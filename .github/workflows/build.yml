@@ -4,12 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Run the upstream bump check now (normally schedule-only)"
+        description: "Bump PKGBUILD to the latest upstream release and open a PR"
         type: boolean
         default: false
-  schedule:
-    # check every 2 hours for new upstream tags (release cadence is ~weekly)
-    - cron: '23 */2 * * *'
   pull_request:
   push:
     branches: [main]
@@ -20,17 +17,15 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Schedule: detect new upstream release -> open auto-merge PR (never commits
-  # to main directly). Build/smoke/release/aur-sync are triggered by the PR
-  # checks and the push that follows the merge.
+  # Manual dispatch with "bump": move PKGBUILD to the latest upstream release
+  # and open an auto-merge PR (never commits to main directly). Build/smoke/
+  # release/aur-sync are triggered by the PR checks and the push that follows
+  # the merge. There is no schedule: a new upstream release needs thorough
+  # testing before it is packaged, so a maintainer starts the bump after
+  # reading the release.
   # ---------------------------------------------------------------------------
   bump:
-    # The schedule only bumps the canonical repository; copies (forks, a CI
-    # test repository) bump on manual dispatch only and idle for free. The
-    # repository variable BUMP_PAUSED=true pauses the schedule there too,
-    # e.g. while packaging changes are in progress; a manual dispatch with
-    # "bump" still runs.
-    if: (github.event_name == 'schedule' && github.repository == 'jabla/hermes-agent-bin' && vars.BUMP_PAUSED != 'true') || (github.event_name == 'workflow_dispatch' && inputs.bump)
+    if: github.event_name == 'workflow_dispatch' && inputs.bump
     runs-on: ubuntu-latest
     timeout-minutes: 15
     container:
@@ -41,7 +36,7 @@ jobs:
       # block sets every unlisted scope to none.
       pull-requests: write
     steps:
-      # Retried: a mirror flake would otherwise fail the scheduled run.
+      # Retried: a mirror flake would otherwise fail the bump.
       - name: Install toolchain (makepkg needed for .SRCINFO regeneration)
         run: |
           for i in 1 2 3; do
@@ -103,15 +98,15 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Build + smoke: run for PRs (merge gate), pushes to main (after merge) and
-  # manual dispatch. Never on schedule (bump job handles that).
+  # manual dispatch.
   # A push whose pkgver-pkgrel is already released (CI, scripts, docs) skips
   # them: its PR run built and smoked the change, and release would skip.
   # ---------------------------------------------------------------------------
   plan:
-    # Not on schedule; also skipped when a manual dispatch only runs the bump.
-    # This also keeps build, smoke and release off those runs: build only
-    # runs when plan was not skipped.
-    if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.bump)
+    # Skipped when a manual dispatch only runs the bump. This also keeps
+    # build, smoke and release off those runs: build only runs when plan was
+    # not skipped.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.bump) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -317,6 +312,79 @@ jobs:
           fi
           echo "SMOKE-OK: hermes ${pkgver} runs on $("$py" -c 'import platform; print("python", platform.python_version())') and answers --help"
 
+      - name: pm resolves the system tools (fresh non-root user)
+        run: |
+          set -euo pipefail
+          useradd -m smoke
+          # As the launcher runs it: lazy installs off, so nothing may come
+          # from a download.
+          runuser -u smoke -- env HERMES_DISABLE_LAZY_INSTALLS=1 \
+            /opt/hermes-agent/venv/bin/python -I - <<'PY'
+          import os, subprocess, sys
+          from pathlib import Path
+          from cron.scheduler_script import _posix_cron_script_argv
+          from hermes_cli._launchers import installation_command, resolve_store_python, runtime_command
+          from hermes_cli.gateway import generate_systemd_unit, get_python_path
+          from hermes_cli.main_tui_launch import _tui_node_bin
+          from hermes_cli.venv_sync import check_runtime
+          from tools.mcp_tool_config import _managed_launcher, _resolve_stdio_command
+          root = Path("/opt/hermes-agent")
+          venv_python = "/opt/hermes-agent/venv/bin/python"
+          store = "/opt/hermes-agent/system-store/tools/"
+          problems = []
+          # The startup check, which also puts pm's tool dirs on PATH.
+          verdict = check_runtime(root)
+          if verdict:
+              problems.append(f"startup check: {verdict}")
+          # Only node's and npm's store dirs go on PATH: others would shadow
+          # the user's own python3/ffmpeg/rg for bare MCP commands.
+          on_path = [p for p in os.environ["PATH"].split(os.pathsep) if p.startswith(store)]
+          if sorted(Path(p).parent.name.split("-")[0] for p in on_path) != ["node", "npm"]:
+              problems.append(f"store dirs on PATH: {on_path}")
+          for command in ("python3", "ffmpeg", "rg"):
+              resolved = _resolve_stdio_command(command, dict(os.environ))[0]
+              if resolved.startswith(store):
+                  problems.append(f"bare MCP {command} resolves into the store: {resolved}")
+          # Hermes must keep running its children, cron scripts and service
+          # units on the venv, never on the store python
+          # (keep-venv-interpreter.patch). Checked where each path ends up,
+          # so a new upstream reader of the store python shows up here.
+          for publication in (False, True):
+              python = resolve_store_python(root, publication=publication)
+              if python is not None:
+                  problems.append(f"store python (publication={publication}): {python}")
+          interpreters = {
+              "child command": runtime_command(root)[0],
+              "installation command": installation_command(root)[0],
+              "gateway python": get_python_path(),
+              "cron script": _posix_cron_script_argv(Path("/tmp/job.py"))[0][0],
+          }
+          for what, python in interpreters.items():
+              if python != venv_python:
+                  problems.append(f"{what} runs on {python}")
+          unit = generate_systemd_unit()
+          if f'ExecStart="{venv_python}"' not in unit:
+              exec_start = [line for line in unit.splitlines() if line.startswith("ExecStart=")]
+              problems.append(f"gateway unit: {exec_start[:1]}")
+          node = _tui_node_bin("node")
+          if not node.startswith(store) or os.path.realpath(node) != os.path.realpath("/usr/bin/node"):
+              problems.append(f"TUI node is {node}")
+          for command in ("npx", "uvx"):
+              launcher = _managed_launcher(command)
+              if not launcher or not launcher[0].startswith(store):
+                  problems.append(f"MCP {command} resolves to {launcher}")
+                  continue
+              run = subprocess.run([launcher[0], "--version"], capture_output=True, text=True,
+                                   env={**os.environ, "PATH": os.pathsep.join([*launcher[1], os.environ["PATH"]])})
+              if run.returncode != 0:
+                  problems.append(f"MCP {command} --version failed: {run.stderr.strip()[:200]}")
+          if (Path.home() / ".hermes/tools").exists():
+              problems.append("a per-user pm store was created")
+          if problems:
+              sys.exit("SMOKE-FAIL: " + "; ".join(problems))
+          print(f"SYSTEM-TOOLS-OK: node {node}, npx/uvx run, children, cron and unit on the venv")
+          PY
+
   # ---------------------------------------------------------------------------
   # Release + AUR sync: only after a merge to main or a manual dispatch ON main
   # (never from pull_request or another branch — no releases of unreviewed code).
@@ -367,6 +435,15 @@ jobs:
                 "$PREV" "$UPSTREAM" "$UPSTREAM_REPO" "$PREV" "$UPSTREAM"
             else
               printf -- '- [Upstream changes](https://github.com/%s/releases)\n' "$UPSTREAM_REPO"
+            fi
+            # Every source patch of PKGBUILD, linked at the built commit.
+            patches=$(sed -nE "s/^  '([^'/]+\.patch)'$/\1/p" PKGBUILD)
+            if [ -n "$patches" ]; then
+              printf -- '\nPatched upstream source:\n'
+              for patch in $patches; do
+                printf -- '- [%s](https://github.com/%s/blob/%s/%s)\n' \
+                  "$patch" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$patch"
+              done
             fi
             printf -- '\nUpstream commit: `%s`\nArtifact sha256: `%s`\n' \
               "$UPSTREAM_COMMIT" "$(sha256sum "$FILE" | cut -d' ' -f1)"
