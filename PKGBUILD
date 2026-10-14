@@ -6,13 +6,13 @@
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
 # installed package never compiles anything.
 pkgname=hermes-agent-bin
-_pkgver_tag=v0.21.7
-_commit=71d34bad1045610252eda02ee79549436896e784
+_pkgver_tag=v0.22.0
+_commit=e06df9c2eae6901f4c88f464e0ae6e753c0428b8
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
-pkgver=0.21.7
-pkgrel=3
+pkgver=0.22.0
+pkgrel=1
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
@@ -30,10 +30,12 @@ options=('!debug')
 source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
   'keep-venv-interpreter.patch'
+  'release-date-from-stamp.patch'
   'system-tools.py'
 )
-sha256sums=('fcf5fc29d3088764a5a293910f75f43dc736b5655ed410d7339cf94cc1462459'
+sha256sums=('61333ab64f7ad728bc265d103fd73b2eb4b936f9c8d9fe3ccf2531ad955e96a1'
             '8a371d1fb5e0a1fb7a20eeb1f0f4250a70cc8ce26aef47fc19fdc77af88a7d52'
+            '107cf7f981e7a96466d7c3f2a2cc1b8cdf2c1a5db797c22087b27f2e7f64541f'
             '5950d73a49526767dfac20084d8c5597b7ebf5c16e7bff99e31dc4d7fe0d139d')
 
 _extract_dir() {
@@ -46,6 +48,10 @@ prepare() {
   # --fuzz=0: a hunk whose context drifted must fail loudly instead of being
   # applied at a guessed location (offsets are still accepted).
   patch --batch --fuzz=0 -Np1 -i "${srcdir}/keep-venv-interpreter.patch"
+  # Upstream #135223 (draft): the banner date comes from the stamp's
+  # commitDate, not the stale 2026.9.24 literal. Drop it once upstream ships
+  # the fix; until then this hunk fails loudly when __init__.py moves.
+  patch --batch --fuzz=0 -Np1 -i "${srcdir}/release-date-from-stamp.patch"
 }
 
 build() {
@@ -155,6 +161,10 @@ PY
   if [ -d ui-tui/dist ]; then
     cp -a ui-tui/dist/* "$_tuidir/"
   fi
+  # The bundle is an ES module. Upstream's bundle ships this package.json
+  # beside it (scripts/build/agent.py); without it node finds the root
+  # package.json, warns MODULE_TYPELESS_PACKAGE_JSON and parses entry.js twice.
+  echo '{"type":"module"}' > "$_tuidir/package.json"
 
   install -d "$_optdir/venv/lib/python${_pyver}/site-packages"
   {
@@ -164,6 +174,8 @@ PY
   # Readable for every user: the TUI build leaves ui-tui/dist at mode 700
   # (since v0.21.6).
   chmod -R a+rX "$_optdir"
+  # uv leaves its venv lock world-writable (0666); only root changes this venv.
+  rm -f "$_optdir/venv/.lock"
 
   install -d "$pkgdir/usr/bin"
   {

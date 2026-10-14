@@ -38,12 +38,23 @@ This replaces the source package `hermes-agent` (they conflict). Installs to
 - `keep-venv-interpreter.patch` — applied in `prepare()`. Upstream runs its
   child processes and service units on a python from the pm store when the
   store has one, without the venv; the patch keeps them on the venv for this
-  pacman-managed tree. It is the only patch to upstream's code (`package()`
-  only rewrites build paths in `web_dist/hermes-build.json` and stubs out the
-  TUI's `build.mjs`), and the release notes link it. `patch --fuzz=0` stops
-  the build when upstream changes the lines around it; a new place that reads
-  the store python does not, so `smoke` checks where the child command, the
-  installation command, cron scripts and the gateway unit end up.
+  pacman-managed tree. `patch --fuzz=0` stops the build when upstream changes
+  the lines around it; a new place that reads the store python does not, so
+  `smoke` checks where the child command, the installation command, cron
+  scripts and the gateway unit end up.
+- `release-date-from-stamp.patch` — applied in `prepare()`: the `hermes_cli/__init__.py`
+  part of upstream's draft fix
+  [#135223](https://github.com/NousResearch/hermes-agent/pull/135223). Since the
+  switch to tag-based releases upstream no longer bumps `__release_date__`, so
+  `hermes --version` and the banners show 2026.9.24 for every release. The patch
+  dates them from the stamp's `commitDate` (the tagged commit); `smoke` checks the
+  date `hermes --version` prints. Drop it once upstream ships the fix: the
+  build then stops on it.
+
+  These two patches are the only changes to upstream's code. `package()` only
+  rewrites build paths in `web_dist/hermes-build.json`, stubs out the TUI's
+  `build.mjs` and adds files beside the code (install stamp, system-tools
+  store, the TUI bundle's `package.json`). The release notes link every patch.
 - `aur/PKGBUILD` — the AUR *wrapper*, source of truth for
   [hermes-agent-bin on the AUR](https://aur.archlinux.org/packages/hermes-agent-bin).
   Its `source` points at the GitHub Release artifact, stored under a name that
@@ -59,7 +70,7 @@ This replaces the source package `hermes-agent` (they conflict). Installs to
 
 ## Maintenance
 
-- **New upstream release**: there is no scheduled check; watch the upstream repository's releases (*Watch > Custom > Releases*) and read the release notes first: a new release needs thorough testing before it is packaged, and a change around the patched lines stops the build until `keep-venv-interpreter.patch` is rebased. Then run the workflow by hand with `bump` (`gh workflow run build-package -f bump=true`). The `bump` job moves `PKGBUILD` to the new tag (tag, commit, source checksum), updates `aur/PKGBUILD` and `.SRCINFO`, and opens an auto-merge PR. A new version starts at `pkgrel=1`; a new tag with an unchanged version gets the next `pkgrel` (otherwise its release tag would already exist); an older version aborts the bump. An open bump PR is updated with `main` when the job runs again, because the ruleset only merges up-to-date branches. The job authenticates with the `BUMP_TOKEN` secret — a fine-grained PAT (Contents + Pull requests: read/write) — because the default `GITHUB_TOKEN` produces a bot-authored PR whose checks need manual approval and whose merge never triggers the release pipeline. The job logs the token identity it used and fails if the secret is missing or rejected; its read-only calls to upstream's API use the workflow token, because unauthenticated calls hit the runners' shared rate limit. The PAT is created without an expiry date, so revocation — not rotation — is the deliberate step: delete it under *Settings > Developer settings > Fine-grained tokens* and `gh secret delete BUMP_TOKEN` here and in `hermes-agent-desktop-bin`.
+- **New upstream release**: there is no scheduled check; watch the upstream repository's releases (*Watch > Custom > Releases*) and read the release notes first: a new release needs thorough testing before it is packaged, and a change around the patched lines stops the build until the patch is rebased or dropped. Then run the workflow by hand with `bump` (`gh workflow run build-package -f bump=true`). The `bump` job moves `PKGBUILD` to the new tag (tag, commit, source checksum), updates `aur/PKGBUILD` and `.SRCINFO`, and opens an auto-merge PR. A new version starts at `pkgrel=1`; a new tag with an unchanged version gets the next `pkgrel` (otherwise its release tag would already exist); an older version aborts the bump. An open bump PR is updated with `main` when the job runs again, because the ruleset only merges up-to-date branches. The job authenticates with the `BUMP_TOKEN` secret — a fine-grained PAT (Contents + Pull requests: read/write) — because the default `GITHUB_TOKEN` produces a bot-authored PR whose checks need manual approval and whose merge never triggers the release pipeline. The job logs the token identity it used and fails if the secret is missing or rejected; its read-only calls to upstream's API use the workflow token, because unauthenticated calls hit the runners' shared rate limit. The PAT is created without an expiry date, so revocation — not rotation — is the deliberate step: delete it under *Settings > Developer settings > Fine-grained tokens* and `gh secret delete BUMP_TOKEN` here and in `hermes-agent-desktop-bin`.
 - **Pipeline**: `plan` -> `build` -> `smoke` -> `release` -> `aur-sync`. On a push to `main` whose `pkgver-pkgrel` is already released (CI, scripts, docs, `aur/`), `plan` skips `build`, `smoke` and `release`: the pull request run checked the change, and `aur-sync` publishes `aur/` against the existing release. A manual dispatch on `main` always builds. If `plan` fails, everything builds. `build` and `smoke` also run on pull requests (merge gate): `build` runs `check()`, validates `aur/.SRCINFO` and the metadata of both PKGBUILDs, and builds `aur/PKGBUILD` from the fresh artifact the way AUR users' makepkg does — its payload must match the artifact file for file (paths, modes, links, sha256), and a rebuild must still pass the checksum. `smoke` installs the package in a clean container with the dependencies pacman resolves from its `depends=()` and checks the import, that the venv runs on the system Python, that everything under `/opt` is readable for other users, the version and upstream commit `hermes --version` reports, the prebuilt TUI and web bundles and `hermes --help`, and that for a fresh non-root user pm finds node, npx and uvx in the system-tools store with a clean startup check, hermes keeps its children, cron scripts and gateway unit on the venv, and bare MCP commands like ffmpeg are not shadowed by the store. `release` and `aur-sync` only run for `main`; `release` tags the built commit and writes notes linking the upstream release and the upstream compare view, and `aur-sync` injects the released artifact's sha256 into `aur/` and pushes to the AUR only while its commit is still `main`'s HEAD. Upstream tag and commit are pinned in `PKGBUILD` (`_pkgver_tag`, `_commit`).
 - **Copies of this repository** (forks, a private CI test repository): the AUR push only runs in `jabla/hermes-agent-bin`. Elsewhere `aur-sync` prints the diff it would push, so pipeline changes can be tested end to end without publishing anything.
 - **Upgrading from 0.21.5 or older** (bundled CPython 3.11): pacman removes the old interpreter, but files a root run of hermes created there (bytecode, packages installed into the venv) belong to no package. If pacman warns that a `python3.11` directory under `/opt/hermes-agent` is not empty, remove it: nothing uses it any more.

@@ -274,10 +274,13 @@ jobs:
           pkgver=${pkgver%-*}
           version=$(hermes --version 2>&1)
           version=${version%%$'\n'*}   # first line; no pipe to head under pipefail
+          # The date is the stamp's commitDate (release-date-from-stamp.patch),
+          # not upstream's stale literal.
+          date=$("$py" -c 'import datetime as d, json; t = d.datetime.fromtimestamp(json.load(open("/opt/hermes-agent/install-stamp.json"))["commitDate"], d.UTC); print(f"{t.year}.{t.month}.{t.day}")')
           case "$version" in
-            "Hermes Agent v${pkgver} "*"upstream ${COMMIT:0:8}"*) ;;
+            "Hermes Agent v${pkgver} (${date}) "*"upstream ${COMMIT:0:8}"*) ;;
             *)
-              echo "SMOKE-FAIL: hermes --version says '$version', expected v${pkgver} from upstream ${COMMIT:0:8}"
+              echo "SMOKE-FAIL: hermes --version says '$version', expected v${pkgver} (${date}) from upstream ${COMMIT:0:8}"
               exit 1
               ;;
           esac
@@ -297,9 +300,16 @@ jobs:
             head -n 20 <<<"$unreadable"
             exit 1
           fi
+          # ... and writable only for root.
+          writable=$(find /opt/hermes-agent ! -type l -perm -0002)
+          if [ -n "$writable" ]; then
+            echo "SMOKE-FAIL: writable for other users:"
+            head -n 20 <<<"$writable"
+            exit 1
+          fi
           # Without the prebuilt bundles the CLI would try an npm build in the
           # root-owned /opt tree.
-          for f in hermes_cli/tui_dist/entry.js hermes_cli/web_dist/index.html; do
+          for f in hermes_cli/tui_dist/entry.js hermes_cli/tui_dist/package.json hermes_cli/web_dist/index.html; do
             if [ ! -s "/opt/hermes-agent/$f" ]; then
               echo "SMOKE-FAIL: /opt/hermes-agent/$f is missing"
               exit 1
