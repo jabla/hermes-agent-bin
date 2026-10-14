@@ -12,7 +12,7 @@ _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
 pkgver=0.22.0
-pkgrel=2
+pkgrel=3
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
@@ -39,11 +39,13 @@ source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
   'keep-venv-interpreter.patch'
   'release-date-from-stamp.patch'
+  'edge-tts-7.3.0.patch'
   'system-tools.py'
 )
 sha256sums=('61333ab64f7ad728bc265d103fd73b2eb4b936f9c8d9fe3ccf2531ad955e96a1'
             '8a371d1fb5e0a1fb7a20eeb1f0f4250a70cc8ce26aef47fc19fdc77af88a7d52'
             '107cf7f981e7a96466d7c3f2a2cc1b8cdf2c1a5db797c22087b27f2e7f64541f'
+            'd1c3260e7ea4fc56894449eac5c9de04e85f0429e58dbbc1eb87e8320a814d27'
             '5950d73a49526767dfac20084d8c5597b7ebf5c16e7bff99e31dc4d7fe0d139d')
 
 _extract_dir() {
@@ -60,6 +62,10 @@ prepare() {
   # commitDate, not the stale 2026.9.24 literal. Drop it once upstream ships
   # the fix; until then this hunk fails loudly when __init__.py moves.
   patch --batch --fuzz=0 -Np1 -i "${srcdir}/release-date-from-stamp.patch"
+  # Upstream #138204 (draft): edge-tts 7.3.0 handles Microsoft's new
+  # Sec-MS-GEC tokens; with 7.2.7 every Edge TTS synthesis gets a 403
+  # (#137944). Drop it once upstream ships the bump.
+  patch --batch --fuzz=0 -Np1 -i "${srcdir}/edge-tts-7.3.0.patch"
 }
 
 build() {
