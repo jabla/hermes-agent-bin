@@ -109,8 +109,15 @@ jobs:
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.bump) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # The merged pull request and its run's artifacts.
+      pull-requests: read
+      actions: read
     outputs:
       released: ${{ steps.release.outputs.released }}
+      # A green pull request run whose package the release takes over.
+      reuse_run: ${{ steps.reuse.outputs.run }}
     steps:
       - name: Check whether the pushed version is released already
         id: release
@@ -138,11 +145,57 @@ jobs:
             echo released=false >> "$GITHUB_OUTPUT"
           fi
 
+      # Build once: the push of a merged pull request from this repository
+      # releases the package its last green run built and smoke-tested, when
+      # that run built the same tree. Fork pull requests, an expired artifact,
+      # another tree or any failed lookup build again as before.
+      - name: Find the tested package of the merged pull request
+        id: reuse
+        if: github.event_name == 'push' && steps.release.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          build() { echo "$1: building"; echo run= >> "$GITHUB_OUTPUT"; exit 0; }
+          repo=$GITHUB_REPOSITORY
+          pr=$(gh api "repos/$repo/commits/$GITHUB_SHA/pulls" | python3 -c '
+          import json, os, sys
+          for p in json.load(sys.stdin):
+              if (p.get("merged_at") and p["base"]["ref"] == "main"
+                      and (p["head"]["repo"] or {}).get("full_name") == os.environ["GITHUB_REPOSITORY"]):
+                  print(p["number"], p["head"]["sha"])
+                  break') || build "pull request lookup failed"
+          [ -n "$pr" ] || build "no merged pull request from $repo"
+          read -r number head <<<"$pr"
+          # Auto-merge fires when smoke passes; the run itself may finish a
+          # few seconds later.
+          for attempt in 1 2 3 4; do
+            run=$(gh api "repos/$repo/actions/workflows/build.yml/runs?event=pull_request&head_sha=$head&status=success&per_page=1" \
+                    --jq '.workflow_runs[0].id // empty') || build "run lookup failed"
+            [ -n "$run" ] || [ "$attempt" -eq 4 ] || sleep 15
+            [ -z "$run" ] || break
+          done
+          [ -n "$run" ] || build "no green run of pull request #$number"
+          artifacts=$(gh api "repos/$repo/actions/runs/$run/artifacts" \
+                        --jq '[.artifacts[] | select(.expired | not) | .name] | join(" ")') || build "artifact lookup failed"
+          for name in pkg build-info; do
+            case " $artifacts " in
+              *" $name "*) ;;
+              *) build "run $run has no unexpired $name artifact" ;;
+            esac
+          done
+          gh run download "$run" --repo "$repo" -n build-info -D /tmp/build-info || build "build-info download failed"
+          built=$(cat /tmp/build-info/tree)
+          pushed=$(gh api "repos/$repo/git/commits/$GITHUB_SHA" --jq .tree.sha) || build "tree lookup failed"
+          [ "$built" = "$pushed" ] || build "run $run built tree $built, main has $pushed"
+          echo "Releasing the package of run $run (pull request #$number, tree $pushed)"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   build:
     needs: plan
     # Skip only when plan reported an existing release. A failed plan must not
     # skip build and smoke: skipped required checks count as passed.
-    if: ${{ !cancelled() && needs.plan.result != 'skipped' && needs.plan.outputs.released != 'true' }}
+    if: ${{ !cancelled() && needs.plan.result != 'skipped' && needs.plan.outputs.released != 'true' && needs.plan.outputs.reuse_run == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
@@ -167,6 +220,21 @@ jobs:
           runuser -u builder -- sh -c 'cd "$GITHUB_WORKSPACE/aur" && makepkg --printsrcinfo | diff -q - .SRCINFO'
           runuser -u builder -- bash "$GITHUB_WORKSPACE/scripts/check-metadata.sh"
 
+      # uv's wheels built from source (python-olm, ~45 s) and npm's
+      # downloads. A pull request restores the caches of its own runs and of
+      # main.
+      - name: Restore the uv and npm caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /home/builder/.cache/uv
+            /home/builder/.npm
+          key: build-cache-${{ hashFiles('PKGBUILD', '*.patch') }}
+          restore-keys: build-cache-
+
+      - name: Hand the caches to the build user
+        run: chown -R builder:builder /home/builder
+
       - name: Install dependencies declared in PKGBUILD
         run: |
           # Read them from PKGBUILD itself, so CI installs exactly what
@@ -183,6 +251,10 @@ jobs:
 
       - name: Show result
         run: ls -lh "$GITHUB_WORKSPACE"/*.pkg.tar.zst
+
+      # Keeps the wheels uv built from source, drops what it can download again.
+      - name: Trim the uv cache
+        run: runuser -u builder -- uv cache prune --ci
 
       # AUR users install aur/PKGBUILD re-wrapping this artifact, not the
       # artifact itself, so build the wrapper from it the way their makepkg
@@ -223,7 +295,24 @@ jobs:
           name: pkg
           path: '*.pkg.tar.zst'
           if-no-files-found: error
-          # Only smoke and release of this run need it; the release keeps the file.
+          # Smoke and the release need it (the release of a merged pull
+          # request takes it from that pull request's run); the release keeps
+          # the file.
+          retention-days: 3
+
+      # The tree this run built, for the release of the merged pull request.
+      - name: Record the built tree
+        run: |
+          install -d build-info
+          git -c safe.directory="$GITHUB_WORKSPACE" rev-parse 'HEAD^{tree}' > build-info/tree
+          cat build-info/tree
+
+      - name: Upload the build info
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-info
+          path: build-info/tree
+          if-no-files-found: error
           retention-days: 3
 
   smoke:
@@ -251,6 +340,8 @@ jobs:
       - name: Import + CLI smoke test
         env:
           COMMIT: ${{ needs.build.outputs.commit }}
+          # Read-only lookup of the upstream commit date.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           py=/opt/hermes-agent/venv/bin/python
@@ -274,6 +365,19 @@ jobs:
           pkgver=${pkgver%-*}
           version=$(hermes --version 2>&1)
           version=${version%%$'\n'*}   # first line; no pipe to head under pipefail
+          # The stamp dates the upstream commit, not a file time the patches
+          # changed: compare with the commit date GitHub reports.
+          auth=()
+          if [ -n "${GH_TOKEN:-}" ]; then
+            auth=(-H "Authorization: Bearer $GH_TOKEN")
+          fi
+          committed=$(curl -fsS "${auth[@]}" "https://api.github.com/repos/NousResearch/hermes-agent/commits/$COMMIT" |
+            "$py" -c 'import datetime as d, json, sys; print(int(d.datetime.fromisoformat(json.load(sys.stdin)["commit"]["committer"]["date"]).timestamp()))')
+          stamped=$("$py" -c 'import json; print(json.load(open("/opt/hermes-agent/install-stamp.json"))["commitDate"])')
+          if [ "$committed" != "$stamped" ]; then
+            echo "SMOKE-FAIL: the stamp dates upstream ${COMMIT:0:8} at $stamped, GitHub at $committed"
+            exit 1
+          fi
           # The date is the stamp's commitDate (release-date-from-stamp.patch),
           # not upstream's stale literal.
           date=$("$py" -c 'import datetime as d, json; t = d.datetime.fromtimestamp(json.load(open("/opt/hermes-agent/install-stamp.json"))["commitDate"], d.UTC); print(f"{t.year}.{t.month}.{t.day}")')
@@ -457,18 +561,34 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     runs-on: ubuntu-latest
-    needs: [build, smoke]
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.smoke.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+    needs: [plan, build, smoke]
+    # Built and smoked here, or taken over from the merged pull request's run.
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && ((needs.build.result == 'success' && needs.smoke.result == 'success') || (needs.plan.result == 'success' && needs.plan.outputs.reuse_run != '')) }}
     timeout-minutes: 10
     permissions:
       contents: write
+      # The package of another run.
+      actions: read
+    env:
+      BUILD_RUN: ${{ needs.plan.outputs.reuse_run || github.run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Download the package of this run
+        if: needs.plan.outputs.reuse_run == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pkg
           path: pkg
+
+      - name: Download the package of the merged pull request's run
+        if: needs.plan.outputs.reuse_run != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pkg
+          path: pkg
+          run-id: ${{ needs.plan.outputs.reuse_run }}
+          github-token: ${{ github.token }}
 
       - name: Create GitHub Release (skip if tag exists)
         env:
@@ -511,8 +631,9 @@ jobs:
                   "$patch" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$patch"
               done
             fi
-            printf -- '\nUpstream commit: `%s`\nArtifact sha256: `%s`\n' \
-              "$UPSTREAM_COMMIT" "$(sha256sum "$FILE" | cut -d' ' -f1)"
+            printf -- '\nUpstream commit: `%s`\nArtifact sha256: `%s`\nBuilt and smoke-tested in: %s/%s/actions/runs/%s\n' \
+              "$UPSTREAM_COMMIT" "$(sha256sum "$FILE" | cut -d' ' -f1)" \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$BUILD_RUN"
           } > /tmp/notes.md
           cat /tmp/notes.md
           # --target: tag the commit that was built, not whatever main is now.

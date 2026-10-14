@@ -34,7 +34,7 @@ optdepends=(
 makedepends=('rsync' 'cmake')   # cmake: python-olm (matrix extra)
 conflicts=('hermes-agent')
 provides=('hermes-agent')
-options=('!debug')
+options=('!debug' '!strip')   # package() strips the native libraries itself
 source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
   'keep-venv-interpreter.patch'
@@ -54,6 +54,10 @@ _extract_dir() {
 
 prepare() {
   cd "$(_extract_dir)"
+
+  # The archive's mtimes are the upstream commit time. Record it before the
+  # patches below change pyproject.toml; package() writes it into the stamp.
+  stat -c %Y pyproject.toml > "${srcdir}/commit-date"
 
   # --fuzz=0: a hunk whose context drifted must fail loudly instead of being
   # applied at a guessed location (offsets are still accepted).
@@ -142,7 +146,7 @@ package() {
   # (pyproject says 0.0.0; without the stamp `hermes --version` reports
   # "unknown"). Upstream's packager script writes it. "external" keeps hermes
   # from syncing the root-owned venv and marks the tree as not its own. The
-  # archive's mtimes are the commit time.
+  # commit time comes from prepare().
   # The script fills gaps from CI variables (GITHUB_REF_NAME, ...) and from
   # git, which would find this packaging repository around $srcdir: start it
   # with a bare environment and keep git inside $srcdir.
@@ -150,7 +154,7 @@ package() {
     venv/bin/python scripts/write_install_stamp.py \
     --output "$_optdir/install-stamp.json" \
     --commit "$_commit" \
-    --commit-date "$(stat -c %Y pyproject.toml)" \
+    --commit-date "$(<"${srcdir}/commit-date")" \
     --base-version "$pkgver" \
     --distance 0 \
     --source ci \
@@ -194,6 +198,16 @@ PY
   {
     echo "import sys; sys.path.insert(0, \"/opt/${_optname}\")"
   } > "$_optdir/venv/lib/python${_pyver}/site-packages/hermes.pth"
+
+  # makepkg's own strip step inspects each of the ~37k files (about three
+  # minutes in CI); only the venv's native libraries are ELF objects. The
+  # name test alone would also catch text files named *.so.
+  find "$_optdir" -type f -name '*.so*' -print0 |
+    while IFS= read -r -d '' lib; do
+      if [ "$(head -c 4 "$lib")" = $'\x7fELF' ]; then
+        strip --strip-unneeded "$lib"
+      fi
+    done
 
   # Readable for every user: the TUI build leaves ui-tui/dist at mode 700
   # (since v0.21.6).
