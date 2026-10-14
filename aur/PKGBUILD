@@ -5,7 +5,7 @@
 # package; this PKGBUILD only re-wraps it, nothing is compiled here.
 pkgname=hermes-agent-bin
 pkgver=0.22.0
-pkgrel=2
+pkgrel=3
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
