@@ -338,6 +338,8 @@ jobs:
       - name: Import + CLI smoke test
         env:
           COMMIT: ${{ needs.build.outputs.commit }}
+          # Read-only lookup of the upstream commit date.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           py=/opt/hermes-agent/venv/bin/python
@@ -361,6 +363,19 @@ jobs:
           pkgver=${pkgver%-*}
           version=$(hermes --version 2>&1)
           version=${version%%$'\n'*}   # first line; no pipe to head under pipefail
+          # The stamp dates the upstream commit, not a file time the patches
+          # changed: compare with the commit date GitHub reports.
+          auth=()
+          if [ -n "${GH_TOKEN:-}" ]; then
+            auth=(-H "Authorization: Bearer $GH_TOKEN")
+          fi
+          committed=$(curl -fsS "${auth[@]}" "https://api.github.com/repos/NousResearch/hermes-agent/commits/$COMMIT" |
+            "$py" -c 'import datetime as d, json, sys; print(int(d.datetime.fromisoformat(json.load(sys.stdin)["commit"]["committer"]["date"]).timestamp()))')
+          stamped=$("$py" -c 'import json; print(json.load(open("/opt/hermes-agent/install-stamp.json"))["commitDate"])')
+          if [ "$committed" != "$stamped" ]; then
+            echo "SMOKE-FAIL: the stamp dates upstream ${COMMIT:0:8} at $stamped, GitHub at $committed"
+            exit 1
+          fi
           # The date is the stamp's commitDate (release-date-from-stamp.patch),
           # not upstream's stale literal.
           date=$("$py" -c 'import datetime as d, json; t = d.datetime.fromtimestamp(json.load(open("/opt/hermes-agent/install-stamp.json"))["commitDate"], d.UTC); print(f"{t.year}.{t.month}.{t.day}")')

@@ -55,6 +55,10 @@ _extract_dir() {
 prepare() {
   cd "$(_extract_dir)"
 
+  # The archive's mtimes are the upstream commit time. Record it before the
+  # patches below change pyproject.toml; package() writes it into the stamp.
+  stat -c %Y pyproject.toml > "${srcdir}/commit-date"
+
   # --fuzz=0: a hunk whose context drifted must fail loudly instead of being
   # applied at a guessed location (offsets are still accepted).
   patch --batch --fuzz=0 -Np1 -i "${srcdir}/keep-venv-interpreter.patch"
@@ -142,7 +146,7 @@ package() {
   # (pyproject says 0.0.0; without the stamp `hermes --version` reports
   # "unknown"). Upstream's packager script writes it. "external" keeps hermes
   # from syncing the root-owned venv and marks the tree as not its own. The
-  # archive's mtimes are the commit time.
+  # commit time comes from prepare().
   # The script fills gaps from CI variables (GITHUB_REF_NAME, ...) and from
   # git, which would find this packaging repository around $srcdir: start it
   # with a bare environment and keep git inside $srcdir.
@@ -150,7 +154,7 @@ package() {
     venv/bin/python scripts/write_install_stamp.py \
     --output "$_optdir/install-stamp.json" \
     --commit "$_commit" \
-    --commit-date "$(stat -c %Y pyproject.toml)" \
+    --commit-date "$(<"${srcdir}/commit-date")" \
     --base-version "$pkgver" \
     --distance 0 \
     --source ci \
