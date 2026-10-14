@@ -178,10 +178,12 @@ jobs:
           [ -n "$run" ] || build "no green run of pull request #$number"
           artifacts=$(gh api "repos/$repo/actions/runs/$run/artifacts" \
                         --jq '[.artifacts[] | select(.expired | not) | .name] | join(" ")') || build "artifact lookup failed"
-          case " $artifacts " in
-            *" pkg "*" build-info "*|*" build-info "*" pkg "*) ;;
-            *) build "run $run has no unexpired pkg and build-info artifacts" ;;
-          esac
+          for name in pkg build-info; do
+            case " $artifacts " in
+              *" $name "*) ;;
+              *) build "run $run has no unexpired $name artifact" ;;
+            esac
+          done
           gh run download "$run" --repo "$repo" -n build-info -D /tmp/build-info || build "build-info download failed"
           built=$(cat /tmp/build-info/tree)
           pushed=$(gh api "repos/$repo/git/commits/$GITHUB_SHA" --jq .tree.sha) || build "tree lookup failed"
