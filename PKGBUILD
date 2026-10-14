@@ -34,7 +34,7 @@ optdepends=(
 makedepends=('rsync' 'cmake')   # cmake: python-olm (matrix extra)
 conflicts=('hermes-agent')
 provides=('hermes-agent')
-options=('!debug')
+options=('!debug' '!strip')   # package() strips the native libraries itself
 source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
   'keep-venv-interpreter.patch'
@@ -194,6 +194,16 @@ PY
   {
     echo "import sys; sys.path.insert(0, \"/opt/${_optname}\")"
   } > "$_optdir/venv/lib/python${_pyver}/site-packages/hermes.pth"
+
+  # makepkg's own strip step inspects each of the ~37k files (about three
+  # minutes in CI); only the venv's native libraries are ELF objects. The
+  # name test alone would also catch text files named *.so.
+  find "$_optdir" -type f -name '*.so*' -print0 |
+    while IFS= read -r -d '' lib; do
+      if [ "$(head -c 4 "$lib")" = $'\x7fELF' ]; then
+        strip --strip-unneeded "$lib"
+      fi
+    done
 
   # Readable for every user: the TUI build leaves ui-tui/dist at mode 700
   # (since v0.21.6).
