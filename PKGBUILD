@@ -206,8 +206,10 @@ PY
     # The browser tools take a system browser only through this variable
     # (it wins over pm's own Chromium). Without one they need
     # `hermes pm install agent-browser`, which also fetches pm's Chromium.
-    echo 'if [[ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]]; then'
-    echo '  for browser in chromium google-chrome-stable brave; do'
+    # An empty value keeps pm's Chromium. The order is the desktop app's
+    # launcher's, which exports its pick before it runs this one.
+    echo 'if [[ -z "${AGENT_BROWSER_EXECUTABLE_PATH+set}" ]]; then'
+    echo '  for browser in google-chrome-stable google-chrome chromium brave; do'
     echo '    if browser_path=$(type -P "$browser"); then'
     echo '      export AGENT_BROWSER_EXECUTABLE_PATH="$browser_path"'
     echo '      break'

@@ -420,21 +420,26 @@ jobs:
           done
           chmod 755 /tmp/fakebin/*
           # The launcher exports the first system browser it finds and keeps
-          # a value the user set. Run it up to its exec line.
+          # a value the user set, an empty one included (pm's Chromium). Run it
+          # up to its exec line.
           last='exec /opt/hermes-agent/venv/bin/python -m hermes_cli.main "$@"'
           if [ "$(tail -n 1 /usr/bin/hermes)" != "$last" ]; then
             echo "SMOKE-FAIL: the launcher no longer ends with: $last"
             exit 1
           fi
           { sed '$d' /usr/bin/hermes; echo 'printf "%s" "${AGENT_BROWSER_EXECUTABLE_PATH:-}"'; } > /tmp/launcher-env
-          for case in "/tmp/fakebin/brave|" "/opt/own/browser|/opt/own/browser"; do
-            want=${case%%|*} own=${case#*|}
-            got=$(env PATH="/tmp/fakebin:$PATH" ${own:+AGENT_BROWSER_EXECUTABLE_PATH=$own} bash /tmp/launcher-env)
+          check_pick() {   # expected value, then the caller's environment
+            local want=$1 got
+            shift
+            got=$(env -u AGENT_BROWSER_EXECUTABLE_PATH PATH="/tmp/fakebin:$PATH" "$@" bash /tmp/launcher-env)
             if [ "$got" != "$want" ]; then
-              echo "SMOKE-FAIL: launcher browser '$got', expected '$want'"
+              echo "SMOKE-FAIL: launcher browser '$got', expected '$want' (with: $*)"
               exit 1
             fi
-          done
+          }
+          check_pick /tmp/fakebin/brave
+          check_pick /opt/own/browser AGENT_BROWSER_EXECUTABLE_PATH=/opt/own/browser
+          check_pick "" AGENT_BROWSER_EXECUTABLE_PATH=
           # Without pm's copy hermes takes agent-browser from PATH (the AUR
           # package), so a system browser needs no per-user download.
           runuser -u smoke -- env PATH="/tmp/fakebin:$PATH" HERMES_DISABLE_LAZY_INSTALLS=1 \

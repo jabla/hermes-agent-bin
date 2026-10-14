@@ -20,8 +20,8 @@ system browser:
 yay -S agent-browser-bin chromium   # or google-chrome / brave-bin
 ```
 
-`/usr/bin/hermes` points the tools at the first of `chromium`,
-`google-chrome-stable` and `brave` on `PATH` (`AGENT_BROWSER_EXECUTABLE_PATH`;
+`/usr/bin/hermes` points the tools at the first of `google-chrome-stable`,
+`google-chrome`, `chromium` and `brave` on `PATH` (`AGENT_BROWSER_EXECUTABLE_PATH`;
 set it yourself to pick another). Or let hermes fetch its pinned agent-browser
 and Chromium into `~/.hermes/tools`, once per user:
 
@@ -29,7 +29,10 @@ and Chromium into `~/.hermes/tools`, once per user:
 hermes pm install agent-browser
 ```
 
-A system browser wins over pm's Chromium.
+A system browser wins over pm's Chromium; an empty
+`AGENT_BROWSER_EXECUTABLE_PATH=` keeps pm's. The gateway service starts hermes
+without `/usr/bin/hermes`: for the browser tools there, set the variable in
+`~/.hermes/.env`, which wins over the environment.
 
 ## How it works
 
@@ -99,7 +102,7 @@ A system browser wins over pm's Chromium.
 - **Copies of this repository** (forks, a private CI test repository): the AUR push only runs in `jabla/hermes-agent-bin`. Elsewhere `aur-sync` prints the diff it would push, so pipeline changes can be tested end to end without publishing anything.
 - **Upgrading from 0.21.5 or older** (bundled CPython 3.11): pacman removes the old interpreter, but files a root run of hermes created there (bytecode, packages installed into the venv) belong to no package. If pacman warns that a `python3.11` directory under `/opt/hermes-agent` is not empty, remove it: nothing uses it any more.
 - **Packaging-only changes** (build steps, launcher, dependencies, the wrapper): bump `pkgrel` in both PKGBUILDs, or the release tag already exists and nothing new is published.
-- **Reference package**: `PKGBUILD` follows the AUR source package `hermes-agent` (build steps, extras, launcher and its environment). Both ship `system-tools.py` and `keep-venv-interpreter.patch` from this repository. Differences: the upper Python pin (`python<3.15`), the install stamp (upstream's script, `distribution: pacman`), `release-date-from-stamp.patch`, the TUI bundle's `package.json`, the rewritten `hermes-build.json` paths and the browser setup (`agent-browser` and a browser are optional here; the launcher stays silent without one). The bump job warns ("Drift from hermes-agent", also in the bump PR) when that PKGBUILD changes beyond its version fields (`pkgver`, `pkgrel`, `_commit`, `_commit_date`, the tarball checksum); the checksums of the reference's own files count as a change. Review the change in its [AUR history](https://aur.archlinux.org/cgit/aur.git/log/?h=hermes-agent), port what applies, then set `REFERENCE_PKGBUILD_SHA256` in `scripts/bump-pkgbuild.py` to the value the warning prints.
+- **Reference package**: `PKGBUILD` follows the AUR source package `hermes-agent` (build steps, extras, launcher and its environment). It took over `system-tools.py` and an adapted `keep-venv-interpreter.patch` (it also accepts `distribution: package-manager`) from this repository. Differences: the upper Python pin (`python<3.15`), the install stamp (upstream's script, `distribution: pacman`), `release-date-from-stamp.patch`, the TUI bundle's `package.json`, the rewritten `hermes-build.json` paths the browser setup (`agent-browser` and a browser are optional here; the launcher stays silent without one) and the reference's `HERMES_NODE` export (the system-tools store already supplies node). The bump job warns ("Drift from hermes-agent", also in the bump PR) when that PKGBUILD changes beyond its version fields (`pkgver`, `pkgrel`, `_commit`, `_commit_date`, the tarball checksum, comment lines); the checksums of the reference's own files count as a change. Review the change in its [AUR history](https://aur.archlinux.org/cgit/aur.git/log/?h=hermes-agent), port what applies, then set `REFERENCE_PKGBUILD_SHA256` in `scripts/bump-pkgbuild.py` to the value the warning prints.
 - **AUR wrapper**: only `pkgver`/`pkgrel` are bumped there; its `sha256sums` is the release artifact's, computed after the build by `aur-sync` (a local `makepkg` yields a different hash).
 - **hermes-agent-desktop-bin** runs the desktop app on this package's runtime: its launcher points the app at `/opt/hermes-agent/venv/bin/python` and exports the same environment as `/usr/bin/hermes` (`HERMES_DISABLE_LAZY_INSTALLS`, `HERMES_LAZY_INSTALL_TARGET`), and its smoke job installs a pinned release artifact of this repository by its asset name. Changing the install layout, the launcher's exports or the asset names needs the same change there.
 - **AUR key**: keep `AUR_SSH_KEY` as a secret of the `aur` environment, with deployment branches limited to `main` — repository secrets are readable by pull requests from branches of this repository. The same key also publishes `hermes-agent-desktop-bin`, and AUR keys can push to every package of the account, so both repositories need the same environment setup.

@@ -33,11 +33,13 @@ REFERENCE_LOG = f"https://aur.archlinux.org/cgit/aur.git/log/?h={REFERENCE}"
 # Fingerprint (see reference_fingerprint) of the hermes-agent PKGBUILD that
 # PKGBUILD was last compared with: hermes-agent 0.22.0-1. Update it after
 # porting a reference change.
-REFERENCE_PKGBUILD_SHA256 = "3b983492894009eea8d7f4affb2963403e863b7322a5e5caee52b0652bec148b"
+REFERENCE_PKGBUILD_SHA256 = "7e08d79e7f6862935d5e738d8f5daac52fcd263b6345b05e681db5deb91fea35"
 SHA_RE = re.compile(r"^sha256sums=\('([0-9a-f]{64})'", re.M)
 # The fields every reference release changes; everything else is packaging.
+# Comment lines count as neither: the reference rewrites version comments
+# with every release.
 VERSION_FIELDS_RE = re.compile(
-    r"(?m)^(?:pkgver|_tagver|pkgrel|_commit|_commit_date)=[^\n]*\n")
+    r"(?m)^(?:pkgver|_tagver|pkgrel|_commit|_commit_date)=[^\n]*\n|^[ \t]*#[^\n]*\n")
 # The first checksum is the upstream tarball's; the others are the
 # reference's own files (patches, system-tools.py) and count as packaging.
 TARBALL_SUM_RE = re.compile(
