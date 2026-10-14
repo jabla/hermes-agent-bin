@@ -307,6 +307,11 @@ jobs:
             head -n 20 <<<"$writable"
             exit 1
           fi
+          # Upstream's test suite stays out of /opt.
+          if [ -e /opt/hermes-agent/tests ]; then
+            echo "SMOKE-FAIL: /opt/hermes-agent/tests is packaged"
+            exit 1
+          fi
           # Without the prebuilt bundles the CLI would try an npm build in the
           # root-owned /opt tree.
           for f in hermes_cli/tui_dist/entry.js hermes_cli/tui_dist/package.json hermes_cli/web_dist/index.html; do
@@ -388,12 +393,58 @@ jobs:
                                    env={**os.environ, "PATH": os.pathsep.join([*launcher[1], os.environ["PATH"]])})
               if run.returncode != 0:
                   problems.append(f"MCP {command} --version failed: {run.stderr.strip()[:200]}")
+          # Lazy installs are off, so an extra missing here stays missing for
+          # users: pm must find each one installed, as the TTS, web search,
+          # provider and gateway code asks for it.
+          from pm import ensure_import
+          for extra in ("anthropic", "edge-tts", "ddgs", "doc-extract", "feishu", "matrix",
+                        "dingtalk", "wecom", "teams", "google-chat"):
+              try:
+                  ensure_import(extra)
+              except Exception as exc:
+                  problems.append(f"extra {extra}: {str(exc)[:200]}")
           if (Path.home() / ".hermes/tools").exists():
               problems.append("a per-user pm store was created")
           if problems:
               sys.exit("SMOKE-FAIL: " + "; ".join(problems))
-          print(f"SYSTEM-TOOLS-OK: node {node}, npx/uvx run, children, cron and unit on the venv")
+          print(f"SYSTEM-TOOLS-OK: node {node}, npx/uvx run, children, cron and unit on the venv, extras installed")
           PY
+
+      - name: Browser tools take a system browser (fresh non-root user)
+        run: |
+          set -euo pipefail
+          # Stand-ins: this checks where hermes looks, not the browser itself.
+          install -d -m 755 /tmp/fakebin
+          for tool in agent-browser brave; do
+            printf '#!/bin/sh\necho "%s 0.0.0"\n' "$tool" > "/tmp/fakebin/$tool"
+          done
+          chmod 755 /tmp/fakebin/*
+          # The launcher exports the first system browser it finds and keeps
+          # a value the user set. Run it up to its exec line.
+          last='exec /opt/hermes-agent/venv/bin/python -m hermes_cli.main "$@"'
+          if [ "$(tail -n 1 /usr/bin/hermes)" != "$last" ]; then
+            echo "SMOKE-FAIL: the launcher no longer ends with: $last"
+            exit 1
+          fi
+          { sed '$d' /usr/bin/hermes; echo 'printf "%s" "${AGENT_BROWSER_EXECUTABLE_PATH:-}"'; } > /tmp/launcher-env
+          for case in "/tmp/fakebin/brave|" "/opt/own/browser|/opt/own/browser"; do
+            want=${case%%|*} own=${case#*|}
+            got=$(env PATH="/tmp/fakebin:$PATH" ${own:+AGENT_BROWSER_EXECUTABLE_PATH=$own} bash /tmp/launcher-env)
+            if [ "$got" != "$want" ]; then
+              echo "SMOKE-FAIL: launcher browser '$got', expected '$want'"
+              exit 1
+            fi
+          done
+          # Without pm's copy hermes takes agent-browser from PATH (the AUR
+          # package), so a system browser needs no per-user download.
+          runuser -u smoke -- env PATH="/tmp/fakebin:$PATH" HERMES_DISABLE_LAZY_INSTALLS=1 \
+            /opt/hermes-agent/venv/bin/python -I -c '
+          import sys
+          from tools.browser_tool_install import _find_agent_browser
+          found = _find_agent_browser(validate=False)
+          if found != "/tmp/fakebin/agent-browser":
+              sys.exit(f"SMOKE-FAIL: agent-browser resolves to {found}")
+          print(f"BROWSER-OK: launcher picks a system browser, agent-browser from PATH ({found})")'
 
   # ---------------------------------------------------------------------------
   # Release + AUR sync: only after a merge to main or a manual dispatch ON main

@@ -12,7 +12,7 @@ _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
 pkgver=0.22.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
@@ -20,10 +20,18 @@ license=('MIT')
 depends=(
   'python>=3.14' 'python<3.15'   # the minor in _pyver
   'nodejs' 'npm' 'uv' 'ripgrep' 'ffmpeg'
+  # the libraries of pm's Chromium (`hermes pm install agent-browser`)
   'nss' 'atk' 'at-spi2-core' 'cups' 'libdrm' 'libxkbcommon' 'mesa' 'pango'
-  'cairo' 'alsa-lib' 'git' 'curl'
+  'cairo' 'alsa-lib' 'libxcomposite' 'libxdamage' 'libxrandr'
+  'git' 'curl'
 )
-makedepends=('rsync')
+optdepends=(
+  'agent-browser: browser tools on a system browser (AUR)'
+  'chromium: system browser for the browser tools'
+  'google-chrome: system browser for the browser tools (AUR)'
+  'brave-bin: system browser for the browser tools (AUR)'
+)
+makedepends=('rsync' 'cmake')   # cmake: python-olm (matrix extra)
 conflicts=('hermes-agent')
 provides=('hermes-agent')
 options=('!debug')
@@ -76,9 +84,18 @@ build() {
     --python "/usr/bin/python${_pyver}" \
     --relocatable \
     venv
+  # Lazy installs are off for the root-owned venv, so the extras users
+  # commonly hit ship here, as in the reference package: anthropic (Anthropic
+  # provider), edge-tts (default TTS), ddgs (free web search), doc-extract and
+  # the gateways beyond messaging. python-olm (matrix) builds a vendored libolm
+  # whose cmake_minimum_required CMake >= 4 rejects unless the policy minimum
+  # is raised.
+  CMAKE_POLICY_VERSION_MINIMUM=3.5 \
   UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT="$PWD/venv" \
-    uv sync --locked --no-dev --no-install-project --extra all,messaging
+    uv sync --locked --no-dev --no-install-project \
+      --extra all,messaging,anthropic,edge-tts,ddgs,doc-extract \
+      --extra feishu,matrix,dingtalk,wecom,teams,google-chat
 }
 
 check() {
@@ -86,7 +103,8 @@ check() {
 
   test -s hermes_cli/web_dist/index.html
   test -s ui-tui/dist/entry.js
-  PYTHONPATH="$PWD" venv/bin/python -c 'import hermes_cli.main'
+  PYTHONPATH="$PWD" venv/bin/python -c \
+    'import hermes_cli.main, anthropic, edge_tts, ddgs, lark_oapi, mautrix, dingtalk_stream, defusedxml'
 }
 
 package() {
@@ -105,7 +123,7 @@ package() {
     --exclude='web/eslint.config.js' --exclude='web/README.md' \
     --exclude='ui-tui/src' --exclude='ui-tui/node_modules' \
     --exclude='scripts/tests' --exclude='scripts/install.*' \
-    --exclude='build' \
+    --exclude='build' --exclude='/tests' \
     . "$_optdir/"
 
   echo "console.log('skipping build, using prebuilt dist/entry.js')" > "$_optdir/ui-tui/scripts/build.mjs"
@@ -185,6 +203,17 @@ PY
     echo ': "${XDG_DATA_HOME:=$HOME/.local/share}"'
     echo 'export HERMES_DISABLE_LAZY_INSTALLS=1'
     echo 'export HERMES_LAZY_INSTALL_TARGET="$XDG_DATA_HOME/hermes-agent/python"'
+    # The browser tools take a system browser only through this variable
+    # (it wins over pm's own Chromium). Without one they need
+    # `hermes pm install agent-browser`, which also fetches pm's Chromium.
+    echo 'if [[ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]]; then'
+    echo '  for browser in chromium google-chrome-stable brave; do'
+    echo '    if browser_path=$(type -P "$browser"); then'
+    echo '      export AGENT_BROWSER_EXECUTABLE_PATH="$browser_path"'
+    echo '      break'
+    echo '    fi'
+    echo '  done'
+    echo 'fi'
     echo "exec /opt/${_optname}/venv/bin/python -m hermes_cli.main" '"$@"'
   } > "$pkgdir/usr/bin/hermes"
 

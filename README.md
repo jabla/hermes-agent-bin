@@ -11,6 +11,26 @@ yay -S hermes-agent-bin
 This replaces the source package `hermes-agent` (they conflict). Installs to
 `/opt/hermes-agent` with the `hermes` launcher in `/usr/bin`.
 
+### Browser tools
+
+The browser tools drive a Chromium through `agent-browser`. Either use a
+system browser:
+
+```bash
+yay -S agent-browser-bin chromium   # or google-chrome / brave-bin
+```
+
+`/usr/bin/hermes` points the tools at the first of `chromium`,
+`google-chrome-stable` and `brave` on `PATH` (`AGENT_BROWSER_EXECUTABLE_PATH`;
+set it yourself to pick another). Or let hermes fetch its pinned agent-browser
+and Chromium into `~/.hermes/tools`, once per user:
+
+```bash
+hermes pm install agent-browser
+```
+
+A system browser wins over pm's Chromium.
+
 ## How it works
 
 - `PKGBUILD` — the *build* recipe, run in CI (archlinux container, non-root
@@ -22,7 +42,11 @@ This replaces the source package `hermes-agent` (they conflict). Installs to
   the conflict) until this package follows: to 3.15 if upstream supports it by
   then, otherwise to a bundled standalone CPython as up to 0.21.5. `package()`
   also writes upstream's `install-stamp.json`, where hermes reads its version
-  from since v0.21.6.
+  from since v0.21.6. Lazy installs are off for the root-owned venv, so it
+  ships the extras users commonly need beyond `all` and `messaging`, as the
+  reference package does: `anthropic`, `edge-tts` (default TTS), `ddgs` (free
+  web search), `doc-extract` and the gateways feishu, matrix, dingtalk, wecom,
+  teams and google-chat.
 - `system-tools.py` — run by `package()`: builds `/opt/hermes-agent/system-store`,
   a store for upstream's package manager (pm) whose required tools (node, npm,
   ffmpeg, ripgrep, python, uv) are symlinks into `/usr/bin` under the pins of
@@ -71,11 +95,11 @@ This replaces the source package `hermes-agent` (they conflict). Installs to
 ## Maintenance
 
 - **New upstream release**: there is no scheduled check; watch the upstream repository's releases (*Watch > Custom > Releases*) and read the release notes first: a new release needs thorough testing before it is packaged, and a change around the patched lines stops the build until the patch is rebased or dropped. Then run the workflow by hand with `bump` (`gh workflow run build-package -f bump=true`). The `bump` job moves `PKGBUILD` to the new tag (tag, commit, source checksum), updates `aur/PKGBUILD` and `.SRCINFO`, and opens an auto-merge PR. A new version starts at `pkgrel=1`; a new tag with an unchanged version gets the next `pkgrel` (otherwise its release tag would already exist); an older version aborts the bump. An open bump PR is updated with `main` when the job runs again, because the ruleset only merges up-to-date branches. The job authenticates with the `BUMP_TOKEN` secret — a fine-grained PAT (Contents + Pull requests: read/write) — because the default `GITHUB_TOKEN` produces a bot-authored PR whose checks need manual approval and whose merge never triggers the release pipeline. The job logs the token identity it used and fails if the secret is missing or rejected; its read-only calls to upstream's API use the workflow token, because unauthenticated calls hit the runners' shared rate limit. The PAT is created without an expiry date, so revocation — not rotation — is the deliberate step: delete it under *Settings > Developer settings > Fine-grained tokens* and `gh secret delete BUMP_TOKEN` here and in `hermes-agent-desktop-bin`.
-- **Pipeline**: `plan` -> `build` -> `smoke` -> `release` -> `aur-sync`. On a push to `main` whose `pkgver-pkgrel` is already released (CI, scripts, docs, `aur/`), `plan` skips `build`, `smoke` and `release`: the pull request run checked the change, and `aur-sync` publishes `aur/` against the existing release. A manual dispatch on `main` always builds. If `plan` fails, everything builds. `build` and `smoke` also run on pull requests (merge gate): `build` runs `check()`, validates `aur/.SRCINFO` and the metadata of both PKGBUILDs, and builds `aur/PKGBUILD` from the fresh artifact the way AUR users' makepkg does — its payload must match the artifact file for file (paths, modes, links, sha256), and a rebuild must still pass the checksum. `smoke` installs the package in a clean container with the dependencies pacman resolves from its `depends=()` and checks the import, that the venv runs on the system Python, that everything under `/opt` is readable for other users, the version and upstream commit `hermes --version` reports, the prebuilt TUI and web bundles and `hermes --help`, and that for a fresh non-root user pm finds node, npx and uvx in the system-tools store with a clean startup check, hermes keeps its children, cron scripts and gateway unit on the venv, and bare MCP commands like ffmpeg are not shadowed by the store. `release` and `aur-sync` only run for `main`; `release` tags the built commit and writes notes linking the upstream release and the upstream compare view, and `aur-sync` injects the released artifact's sha256 into `aur/` and pushes to the AUR only while its commit is still `main`'s HEAD. Upstream tag and commit are pinned in `PKGBUILD` (`_pkgver_tag`, `_commit`).
+- **Pipeline**: `plan` -> `build` -> `smoke` -> `release` -> `aur-sync`. On a push to `main` whose `pkgver-pkgrel` is already released (CI, scripts, docs, `aur/`), `plan` skips `build`, `smoke` and `release`: the pull request run checked the change, and `aur-sync` publishes `aur/` against the existing release. A manual dispatch on `main` always builds. If `plan` fails, everything builds. `build` and `smoke` also run on pull requests (merge gate): `build` runs `check()`, validates `aur/.SRCINFO` and the metadata of both PKGBUILDs, and builds `aur/PKGBUILD` from the fresh artifact the way AUR users' makepkg does — its payload must match the artifact file for file (paths, modes, links, sha256), and a rebuild must still pass the checksum. `smoke` installs the package in a clean container with the dependencies pacman resolves from its `depends=()` and checks the import, that the venv runs on the system Python, that everything under `/opt` is readable for other users, the version and upstream commit `hermes --version` reports, the prebuilt TUI and web bundles and `hermes --help`, and that for a fresh non-root user pm finds node, npx and uvx in the system-tools store with a clean startup check, hermes keeps its children, cron scripts and gateway unit on the venv, and bare MCP commands like ffmpeg are not shadowed by the store. It also checks that pm finds the shipped extras, that upstream's tests stay out of `/opt` and that the launcher picks a system browser while hermes takes `agent-browser` from `PATH`. `release` and `aur-sync` only run for `main`; `release` tags the built commit and writes notes linking the upstream release and the upstream compare view, and `aur-sync` injects the released artifact's sha256 into `aur/` and pushes to the AUR only while its commit is still `main`'s HEAD. Upstream tag and commit are pinned in `PKGBUILD` (`_pkgver_tag`, `_commit`).
 - **Copies of this repository** (forks, a private CI test repository): the AUR push only runs in `jabla/hermes-agent-bin`. Elsewhere `aur-sync` prints the diff it would push, so pipeline changes can be tested end to end without publishing anything.
 - **Upgrading from 0.21.5 or older** (bundled CPython 3.11): pacman removes the old interpreter, but files a root run of hermes created there (bytecode, packages installed into the venv) belong to no package. If pacman warns that a `python3.11` directory under `/opt/hermes-agent` is not empty, remove it: nothing uses it any more.
 - **Packaging-only changes** (build steps, launcher, dependencies, the wrapper): bump `pkgrel` in both PKGBUILDs, or the release tag already exists and nothing new is published.
-- **Reference package**: `PKGBUILD` follows the AUR source package `hermes-agent` (build steps, launcher and its environment), except for the Python version (the reference uses `python311` from the AUR), the install stamp, the system-tools store and `keep-venv-interpreter.patch`. The bump job warns ("Drift from hermes-agent", also in the bump PR) when that PKGBUILD changes beyond its version fields. Review the change in its [AUR history](https://aur.archlinux.org/cgit/aur.git/log/?h=hermes-agent), port what applies, then set `REFERENCE_PKGBUILD_SHA256` in `scripts/bump-pkgbuild.py` to the value the warning prints.
+- **Reference package**: `PKGBUILD` follows the AUR source package `hermes-agent` (build steps, extras, launcher and its environment). Both ship `system-tools.py` and `keep-venv-interpreter.patch` from this repository. Differences: the upper Python pin (`python<3.15`), the install stamp (upstream's script, `distribution: pacman`), `release-date-from-stamp.patch`, the TUI bundle's `package.json`, the rewritten `hermes-build.json` paths and the browser setup (`agent-browser` and a browser are optional here; the launcher stays silent without one). The bump job warns ("Drift from hermes-agent", also in the bump PR) when that PKGBUILD changes beyond its version fields (`pkgver`, `pkgrel`, `_commit`, `_commit_date`, the tarball checksum); the checksums of the reference's own files count as a change. Review the change in its [AUR history](https://aur.archlinux.org/cgit/aur.git/log/?h=hermes-agent), port what applies, then set `REFERENCE_PKGBUILD_SHA256` in `scripts/bump-pkgbuild.py` to the value the warning prints.
 - **AUR wrapper**: only `pkgver`/`pkgrel` are bumped there; its `sha256sums` is the release artifact's, computed after the build by `aur-sync` (a local `makepkg` yields a different hash).
 - **hermes-agent-desktop-bin** runs the desktop app on this package's runtime: its launcher points the app at `/opt/hermes-agent/venv/bin/python` and exports the same environment as `/usr/bin/hermes` (`HERMES_DISABLE_LAZY_INSTALLS`, `HERMES_LAZY_INSTALL_TARGET`), and its smoke job installs a pinned release artifact of this repository by its asset name. Changing the install layout, the launcher's exports or the asset names needs the same change there.
 - **AUR key**: keep `AUR_SSH_KEY` as a secret of the `aur` environment, with deployment branches limited to `main` — repository secrets are readable by pull requests from branches of this repository. The same key also publishes `hermes-agent-desktop-bin`, and AUR keys can push to every package of the account, so both repositories need the same environment setup.
