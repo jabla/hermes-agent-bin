@@ -337,6 +337,15 @@ jobs:
       - name: Install built package (no compile happens here)
         run: pacman -U --noconfirm pkg/*.pkg.tar.zst
 
+      # hermes-agent-desktop(-bin) depend on hermes-agent>=<version>, which an
+      # unversioned provides does not satisfy.
+      - name: Provides hermes-agent with its version
+        run: |
+          set -euo pipefail
+          ver=$(pacman -Q hermes-agent-bin | cut -d' ' -f2)
+          pacman -T "hermes-agent=${ver%-*}"
+          echo "SMOKE-OK: provides hermes-agent=${ver%-*}"
+
       # Users cannot write bytecode into the root-owned /opt, so a module
       # without a valid .pyc from the package compiles again on every start.
       # First step after the install: a root import could write missing ones.

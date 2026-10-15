@@ -6,12 +6,12 @@
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
 # installed package never compiles anything.
 pkgname=hermes-agent-bin
-_pkgver_tag=v0.22.1
-_commit=297552a9d646119871391d202509822cd86330df
+_pkgver_tag=v0.22.2
+_commit=d923a5eb487a17c0a68801bba9ef0f56c81040a8
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
-pkgver=0.22.1
+pkgver=0.22.2
 pkgrel=1
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
@@ -33,7 +33,7 @@ optdepends=(
 )
 makedepends=('rsync' 'cmake')   # cmake: python-olm (matrix extra)
 conflicts=('hermes-agent')
-provides=('hermes-agent')
+provides=("hermes-agent=${pkgver}")
 options=('!debug' '!strip')   # package() strips the native libraries itself
 source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
@@ -42,7 +42,7 @@ source=(
   'edge-tts-7.3.0.patch'
   'system-tools.py'
 )
-sha256sums=('45ebe864dbf65ecd31693a811ddd6e2e449b1878b835b563cf0a28d6a9c4bf38'
+sha256sums=('77d2c763a3bd5133bfb3e327986c987dba249e14988b92919ef726d389c6b9d2'
             '8a371d1fb5e0a1fb7a20eeb1f0f4250a70cc8ce26aef47fc19fdc77af88a7d52'
             '107cf7f981e7a96466d7c3f2a2cc1b8cdf2c1a5db797c22087b27f2e7f64541f'
             'd1c3260e7ea4fc56894449eac5c9de04e85f0429e58dbbc1eb87e8320a814d27'
