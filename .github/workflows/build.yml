@@ -158,13 +158,19 @@ jobs:
           set -euo pipefail
           build() { echo "$1: building"; echo run= >> "$GITHUB_OUTPUT"; exit 0; }
           repo=$GITHUB_REPOSITORY
-          pr=$(gh api "repos/$repo/commits/$GITHUB_SHA/pulls" | python3 -c '
+          # GitHub links a merge commit to its pull request a few seconds after
+          # the push: a lookup right away can come back empty.
+          for attempt in 1 2 3 4; do
+            pr=$(gh api "repos/$repo/commits/$GITHUB_SHA/pulls" | python3 -c '
           import json, os, sys
           for p in json.load(sys.stdin):
               if (p.get("merged_at") and p["base"]["ref"] == "main"
                       and (p["head"]["repo"] or {}).get("full_name") == os.environ["GITHUB_REPOSITORY"]):
                   print(p["number"], p["head"]["sha"])
                   break') || build "pull request lookup failed"
+            [ -n "$pr" ] || [ "$attempt" -eq 4 ] || sleep 15
+            [ -z "$pr" ] || break
+          done
           [ -n "$pr" ] || build "no merged pull request from $repo"
           read -r number head <<<"$pr"
           # Auto-merge fires when smoke passes; the run itself may finish a
