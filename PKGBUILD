@@ -6,13 +6,13 @@
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
 # installed package never compiles anything.
 pkgname=hermes-agent-bin
-_pkgver_tag=v0.22.0
-_commit=e06df9c2eae6901f4c88f464e0ae6e753c0428b8
+_pkgver_tag=v0.22.1
+_commit=297552a9d646119871391d202509822cd86330df
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
-pkgver=0.22.0
-pkgrel=3
+pkgver=0.22.1
+pkgrel=1
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
@@ -42,7 +42,7 @@ source=(
   'edge-tts-7.3.0.patch'
   'system-tools.py'
 )
-sha256sums=('61333ab64f7ad728bc265d103fd73b2eb4b936f9c8d9fe3ccf2531ad955e96a1'
+sha256sums=('45ebe864dbf65ecd31693a811ddd6e2e449b1878b835b563cf0a28d6a9c4bf38'
             '8a371d1fb5e0a1fb7a20eeb1f0f4250a70cc8ce26aef47fc19fdc77af88a7d52'
             '107cf7f981e7a96466d7c3f2a2cc1b8cdf2c1a5db797c22087b27f2e7f64541f'
             'd1c3260e7ea4fc56894449eac5c9de04e85f0429e58dbbc1eb87e8320a814d27'
@@ -198,6 +198,15 @@ PY
   {
     echo "import sys; sys.path.insert(0, \"/opt/${_optname}\")"
   } > "$_optdir/venv/lib/python${_pyver}/site-packages/hermes.pth"
+
+  # Bytecode for the whole tree: users cannot write __pycache__ into the
+  # root-owned /opt, so without it every start compiles everything again
+  # (`hermes --help` 1.15 s instead of 0.46 s). checked-hash: makepkg resets
+  # every mtime to SOURCE_DATE_EPOCH, which would turn timestamp-based .pyc
+  # files stale. A .py edited in place still wins over its old .pyc.
+  # -s/-p record the installed paths, not $pkgdir, in tracebacks.
+  "/usr/bin/python${_pyver}" -m compileall -q -j0 \
+    --invalidation-mode checked-hash -s "$pkgdir" -p / "$_optdir"
 
   # makepkg's own strip step inspects each of the ~37k files (about three
   # minutes in CI); only the venv's native libraries are ELF objects. The

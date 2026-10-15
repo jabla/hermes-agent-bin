@@ -33,6 +33,11 @@ vulnerabilities there.
   same key, so both repositories must protect it the same way.
 - `PKGBUILD` follows the AUR source package `hermes-agent` after review; the
   bump job only reports drift from it and never copies anything automatically.
+- A new version's release can take the package that the merged pull
+  request's run built and smoke-tested instead of building it again on
+  `main`. This only happens for a pull request from this repository whose
+  run built exactly the pushed tree (`build-info`) while its artifact still
+  exists (3 days); fork pull requests and every other case build on `main`.
 - `hermes-agent-desktop-bin`'s smoke job installs a pinned release artifact of
   this repository (version and sha256 hard-coded there, verified before
   install).
