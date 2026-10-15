@@ -141,7 +141,7 @@ jobs:
             echo "Release $TAG exists: skipping build, smoke and release"
             echo released=true >> "$GITHUB_OUTPUT"
           else
-            echo "Release $TAG not found: building"
+            echo "Release $TAG not found"
             echo released=false >> "$GITHUB_OUTPUT"
           fi
 
@@ -336,6 +336,34 @@ jobs:
 
       - name: Install built package (no compile happens here)
         run: pacman -U --noconfirm pkg/*.pkg.tar.zst
+
+      # Users cannot write bytecode into the root-owned /opt, so a module
+      # without a valid .pyc from the package compiles again on every start.
+      # First step after the install: a root import could write missing ones.
+      - name: Every module ships valid bytecode
+        run: |
+          /opt/hermes-agent/venv/bin/python -I -B - <<'PY'
+          import importlib.util, pathlib, sys
+          bad, sources = [], 0
+          for src in pathlib.Path("/opt/hermes-agent").rglob("*.py"):
+              sources += 1
+              pyc = pathlib.Path(importlib.util.cache_from_source(src))
+              try:
+                  data = pyc.read_bytes()
+              except OSError:
+                  bad.append(f"no bytecode for {src}")
+                  continue
+              # Header: magic, flags (3 = hash-based, checked), source hash.
+              if (data[:4] != importlib.util.MAGIC_NUMBER
+                      or int.from_bytes(data[4:8], "little") != 3
+                      or data[8:16] != importlib.util.source_hash(src.read_bytes())):
+                  bad.append(f"not a valid checked-hash .pyc: {pyc}")
+          if bad or not sources:
+              print(f"SMOKE-FAIL: {len(bad)} of {sources} modules lack valid bytecode")
+              print(*bad[:20], sep="\n")
+              sys.exit(1)
+          print(f"SMOKE-OK: {sources} modules ship checked-hash bytecode")
+          PY
 
       - name: Import + CLI smoke test
         env:
