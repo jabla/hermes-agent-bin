@@ -6,12 +6,12 @@
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
 # installed package never compiles anything.
 pkgname=hermes-agent-bin
-_pkgver_tag=v0.22.2
-_commit=d923a5eb487a17c0a68801bba9ef0f56c81040a8
+_pkgver_tag=v0.22.4
+_commit=4d04303818b61bf3aa09278af48356315515965b
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
-pkgver=0.22.2
+pkgver=0.22.4
 pkgrel=1
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
@@ -41,12 +41,14 @@ source=(
   'release-date-from-stamp.patch'
   'edge-tts-7.3.0.patch'
   'system-tools.py'
+  'hermes_agent_bin_env.py'
 )
-sha256sums=('77d2c763a3bd5133bfb3e327986c987dba249e14988b92919ef726d389c6b9d2'
+sha256sums=('808464c45097ebc4febaed2d08bb936095262c6997ba7c49ee1a0c4e7f7c593e'
             '8a371d1fb5e0a1fb7a20eeb1f0f4250a70cc8ce26aef47fc19fdc77af88a7d52'
             '107cf7f981e7a96466d7c3f2a2cc1b8cdf2c1a5db797c22087b27f2e7f64541f'
             'd1c3260e7ea4fc56894449eac5c9de04e85f0429e58dbbc1eb87e8320a814d27'
-            '5950d73a49526767dfac20084d8c5597b7ebf5c16e7bff99e31dc4d7fe0d139d')
+            '5950d73a49526767dfac20084d8c5597b7ebf5c16e7bff99e31dc4d7fe0d139d'
+            '0a27e919682e670e642c0a82130abf3a681e11de0d2442663e768ff9fd4812d9')
 
 _extract_dir() {
   echo "${srcdir}/hermes-agent-${_tagver}"
@@ -194,10 +196,15 @@ PY
   # package.json, warns MODULE_TYPELESS_PACKAGE_JSON and parses entry.js twice.
   echo '{"type":"module"}' > "$_tuidir/package.json"
 
-  install -d "$_optdir/venv/lib/python${_pyver}/site-packages"
+  _sitedir="$_optdir/venv/lib/python${_pyver}/site-packages"
+  install -d "$_sitedir"
+  # The launcher's environment for every python of the venv, also the ones
+  # started without the launcher (the gateway service unit).
+  install -m644 "$srcdir/hermes_agent_bin_env.py" "$_sitedir/"
   {
     echo "import sys; sys.path.insert(0, \"/opt/${_optname}\")"
-  } > "$_optdir/venv/lib/python${_pyver}/site-packages/hermes.pth"
+    echo "import hermes_agent_bin_env"
+  } > "$_sitedir/hermes.pth"
 
   # Bytecode for the whole tree: users cannot write __pycache__ into the
   # root-owned /opt, so without it every start compiles everything again
@@ -232,6 +239,17 @@ PY
     echo ': "${XDG_DATA_HOME:=$HOME/.local/share}"'
     echo 'export HERMES_DISABLE_LAZY_INSTALLS=1'
     echo 'export HERMES_LAZY_INSTALL_TARGET="$XDG_DATA_HOME/hermes-agent/python"'
+    # Installation launchers answer --print-runtime-command with the
+    # interpreter command of their tree as JSON; the desktop app mints its
+    # gateway tickets with that interpreter. Upstream's launchers answer
+    # through this module. keep-venv-interpreter.patch makes it name the venv
+    # python whatever HERMES_HOME says. The command it reports runs hermes
+    # without this launcher; hermes_agent_bin_env.py supplies the exports
+    # there. -I -B as in upstream's launchers: no cwd on sys.path, no
+    # bytecode writes.
+    echo 'if [[ ${1-} == --print-runtime-command ]]; then'
+    echo "  exec /opt/${_optname}/venv/bin/python -I -B -m hermes_cli._launchers" '"$@"'
+    echo 'fi'
     # The browser tools take a system browser only through this variable
     # (it wins over pm's own Chromium). Without one they need
     # `hermes pm install agent-browser`, which also fetches pm's Chromium.
