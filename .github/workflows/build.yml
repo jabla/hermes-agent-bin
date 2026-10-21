@@ -472,6 +472,35 @@ jobs:
             tail -n 40 /tmp/hermes-help.log
             exit 1
           fi
+          # The desktop app asks the launcher for its interpreter and mints
+          # gateway tickets with it: the venv python. Asked from a directory
+          # holding a hermes_cli/, the answer still comes from /opt.
+          decoy=$(mktemp -d)
+          mkdir "$decoy/hermes_cli"
+          echo 'raise SystemExit("decoy hermes_cli imported")' > "$decoy/hermes_cli/__init__.py"
+          if ! runtime=$(cd "$decoy" && hermes --print-runtime-command 2> /tmp/runtime.err); then
+            echo "SMOKE-FAIL: hermes --print-runtime-command failed in $decoy:"
+            cat /tmp/runtime.err
+            exit 1
+          fi
+          rm -r "$decoy"
+          runtime_py=$("$py" -c 'import json, sys; print(json.loads(sys.argv[1])[0])' "$runtime") || runtime_py=
+          if [ "$runtime_py" != "$py" ]; then
+            echo "SMOKE-FAIL: hermes --print-runtime-command names '$runtime_py', not $py: $runtime"
+            exit 1
+          fi
+          # The reported command itself starts the same hermes (without the
+          # launcher; its environment comes from hermes_agent_bin_env.py).
+          if ! reported=$("$py" -c 'import json, subprocess, sys; subprocess.run(json.loads(sys.argv[1]) + ["--version"], check=True)' "$runtime" 2>&1); then
+            echo "SMOKE-FAIL: the reported runtime command failed:"
+            echo "$reported"
+            exit 1
+          fi
+          if [ "${reported%%$'\n'*}" != "$version" ]; then
+            echo "SMOKE-FAIL: the reported runtime command says '$reported', hermes --version '$version'"
+            exit 1
+          fi
+          echo "SMOKE-OK: hermes --print-runtime-command names $py in a command that runs"
           echo "SMOKE-OK: hermes ${pkgver} runs on $("$py" -c 'import platform; print("python", platform.python_version())') and answers --help"
 
       - name: pm resolves the system tools (fresh non-root user)
@@ -587,6 +616,26 @@ jobs:
           check_pick /tmp/fakebin/brave
           check_pick /opt/own/browser AGENT_BROWSER_EXECUTABLE_PATH=/opt/own/browser
           check_pick "" AGENT_BROWSER_EXECUTABLE_PATH=
+          # Started without the launcher (the gateway service unit, the
+          # command --print-runtime-command reports), the venv python gets
+          # the same environment from hermes_agent_bin_env.py.
+          check_venv_env() {   # expected browser and target, then the caller's environment
+            local want="1 $2 $1" got
+            shift 2
+            got=$(env -i HOME=/tmp/envhome PATH="/tmp/fakebin:$PATH" "$@" /opt/hermes-agent/venv/bin/python -I -c '
+          import os
+          print(os.environ.get("HERMES_DISABLE_LAZY_INSTALLS"), os.environ.get("HERMES_LAZY_INSTALL_TARGET"),
+                os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "<unset>"))')
+            if [ "$got" != "$want" ]; then
+              echo "SMOKE-FAIL: venv environment '$got', expected '$want' (with: $*)"
+              exit 1
+            fi
+          }
+          target=/tmp/envhome/.local/share/hermes-agent/python
+          check_venv_env /tmp/fakebin/brave "$target"
+          check_venv_env /opt/own/browser "$target" AGENT_BROWSER_EXECUTABLE_PATH=/opt/own/browser
+          check_venv_env "" "$target" AGENT_BROWSER_EXECUTABLE_PATH=
+          check_venv_env /tmp/fakebin/brave /srv/data/hermes-agent/python XDG_DATA_HOME=/srv/data
           # Without pm's copy hermes takes agent-browser from PATH (the AUR
           # package), so a system browser needs no per-user download.
           runuser -u smoke -- env PATH="/tmp/fakebin:$PATH" HERMES_DISABLE_LAZY_INSTALLS=1 \
