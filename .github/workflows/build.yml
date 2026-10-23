@@ -19,7 +19,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Manual dispatch with "bump": move PKGBUILD to the latest upstream release
   # and open an auto-merge PR (never commits to main directly). Build/smoke/
-  # release/aur-sync are triggered by the PR checks and the push that follows
+  # wrapper/release/aur-sync are triggered by the PR checks and the push that follows
   # the merge. There is no schedule: a new upstream release needs thorough
   # testing before it is packaged, so a maintainer starts the bump after
   # reading the release.
@@ -97,14 +97,14 @@ jobs:
             python3 scripts/bump-pkgbuild.py --pr
 
   # ---------------------------------------------------------------------------
-  # Build + smoke: run for PRs (merge gate), pushes to main (after merge) and
+  # Build, smoke and wrapper: run for PRs (merge gate), pushes to main (after merge) and
   # manual dispatch.
   # A push whose pkgver-pkgrel is already released (CI, scripts, docs) skips
-  # them: its PR run built and smoked the change, and release would skip.
+  # them: its PR run built and checked the change, and release would skip.
   # ---------------------------------------------------------------------------
   plan:
     # Skipped when a manual dispatch only runs the bump. This also keeps
-    # build, smoke and release off those runs: build only runs when plan was
+    # build, smoke, wrapper and release off those runs: build only runs when plan was
     # not skipped.
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.bump) }}
     runs-on: ubuntu-latest
@@ -138,7 +138,7 @@ jobs:
           TAG="v${PKGVER}-${PKGREL}"
           # A failed lookup counts as not released: build as before.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG exists: skipping build, smoke and release"
+            echo "Release $TAG exists: skipping build, smoke, wrapper and release"
             echo released=true >> "$GITHUB_OUTPUT"
           else
             echo "Release $TAG not found"
@@ -173,8 +173,8 @@ jobs:
           done
           [ -n "$pr" ] || build "no merged pull request from $repo"
           read -r number head <<<"$pr"
-          # Auto-merge fires when smoke passes; the run itself may finish a
-          # few seconds later.
+          # Auto-merge fires when the last required check passes; the run
+          # itself may finish a few seconds later.
           for attempt in 1 2 3 4; do
             run=$(gh api "repos/$repo/actions/workflows/build.yml/runs?event=pull_request&head_sha=$head&status=success&per_page=1" \
                     --jq '.workflow_runs[0].id // empty') || build "run lookup failed"
@@ -200,7 +200,7 @@ jobs:
   build:
     needs: plan
     # Skip only when plan reported an existing release. A failed plan must not
-    # skip build and smoke: skipped required checks count as passed.
+    # skip build, smoke and wrapper: skipped required checks count as passed.
     if: ${{ !cancelled() && needs.plan.result != 'skipped' && needs.plan.outputs.released != 'true' && needs.plan.outputs.reuse_run == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -341,12 +341,19 @@ jobs:
             bsdtar -xOf "$1" .MTREE | gzip -dc |
               grep -vE '^\./\.(BUILDINFO|PKGINFO) ' | sed -E 's/ time=[0-9.]+//'
           }
-          if ! diff -u <(manifest "pkg/$artifact") <(manifest "$work/$artifact") > /tmp/wrapper.diff; then
+          # Not in <(...): a failed manifest() would go unnoticed there and two
+          # empty lists compare equal.
+          manifest "pkg/$artifact" > /tmp/artifact.mtree
+          manifest "$work/$artifact" > /tmp/wrapper.mtree
+          if [ ! -s /tmp/artifact.mtree ]; then
+            echo "::error::no manifest read from $artifact"; exit 1
+          fi
+          if ! diff -u /tmp/artifact.mtree /tmp/wrapper.mtree > /tmp/wrapper.diff; then
             echo "::error::the AUR wrapper does not install the artifact's payload unchanged"
             head -n 60 /tmp/wrapper.diff
             exit 1
           fi
-          echo "WRAPPER-OK: aur/PKGBUILD reproduces the artifact's payload ($(manifest "pkg/$artifact" | wc -l) manifest lines)"
+          echo "WRAPPER-OK: aur/PKGBUILD reproduces the artifact's payload ($(wc -l < /tmp/artifact.mtree) manifest lines)"
 
   smoke:
     runs-on: ubuntu-latest

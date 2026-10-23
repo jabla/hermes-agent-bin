@@ -7,7 +7,7 @@ CLI:
 
 - `PKGBUILD` / `aur/PKGBUILD` — recipes, no application code
 - `.github/workflows/build.yml` — CI pipeline (bump, plan, build, smoke,
-  release, aur-sync)
+  wrapper, release, aur-sync)
 - `scripts/` — bump automation and the metadata check
 
 The packaged application itself lives at
@@ -41,8 +41,8 @@ vulnerabilities there.
 - `hermes-agent-desktop-bin`'s smoke job installs a pinned release artifact of
   this repository (version and sha256 hard-coded there, verified before
   install).
-- `main` is protected: pull requests required, `build` + `smoke` checks
-  mandatory, force-push blocked.
+- `main` is protected: pull requests required, `build`, `smoke` and
+  `wrapper` checks mandatory, force-push blocked.
 
 ## Reporting
 
