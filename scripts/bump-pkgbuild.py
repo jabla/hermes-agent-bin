@@ -290,7 +290,7 @@ def main() -> int:
 
     body = (f"Automated bump to upstream [release {tag}]"
             f"(https://github.com/{REPO}/releases/tag/{tag}).\n\n"
-            "Build + smoke run as required checks; auto-merge after green.")
+            "Build, smoke and wrapper run as required checks; auto-merge after green.")
     if drift:
         body += (f"\n\n**Drift from {REFERENCE}** (review before or after the merge):\n"
                  + "\n".join(f"- {line}" for line in drift))
