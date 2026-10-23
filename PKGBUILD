@@ -6,12 +6,12 @@
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
 # installed package never compiles anything.
 pkgname=hermes-agent-bin
-_pkgver_tag=v0.22.4
-_commit=4d04303818b61bf3aa09278af48356315515965b
+_pkgver_tag=v0.22.5
+_commit=bf0203a794a07aac3ff764972ab9087baa4e4f4e
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
-pkgver=0.22.4
+pkgver=0.22.5
 pkgrel=1
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
@@ -39,14 +39,12 @@ source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
   'keep-venv-interpreter.patch'
   'release-date-from-stamp.patch'
-  'edge-tts-7.3.0.patch'
   'system-tools.py'
   'hermes_agent_bin_env.py'
 )
-sha256sums=('808464c45097ebc4febaed2d08bb936095262c6997ba7c49ee1a0c4e7f7c593e'
+sha256sums=('a8f67e5ec14fea681acef6cc7ff1553f002bb6101fd2df22bfdd4b7eecc54eb2'
             '8a371d1fb5e0a1fb7a20eeb1f0f4250a70cc8ce26aef47fc19fdc77af88a7d52'
             '107cf7f981e7a96466d7c3f2a2cc1b8cdf2c1a5db797c22087b27f2e7f64541f'
-            'd1c3260e7ea4fc56894449eac5c9de04e85f0429e58dbbc1eb87e8320a814d27'
             '5950d73a49526767dfac20084d8c5597b7ebf5c16e7bff99e31dc4d7fe0d139d'
             '0a27e919682e670e642c0a82130abf3a681e11de0d2442663e768ff9fd4812d9')
 
@@ -57,8 +55,8 @@ _extract_dir() {
 prepare() {
   cd "$(_extract_dir)"
 
-  # The archive's mtimes are the upstream commit time. Record it before the
-  # patches below change pyproject.toml; package() writes it into the stamp.
+  # The archive's mtimes are the upstream commit time. Record it before a
+  # patch can change pyproject.toml; package() writes it into the stamp.
   stat -c %Y pyproject.toml > "${srcdir}/commit-date"
 
   # --fuzz=0: a hunk whose context drifted must fail loudly instead of being
@@ -68,10 +66,6 @@ prepare() {
   # commitDate, not the stale 2026.9.24 literal. Drop it once upstream ships
   # the fix; until then this hunk fails loudly when __init__.py moves.
   patch --batch --fuzz=0 -Np1 -i "${srcdir}/release-date-from-stamp.patch"
-  # Upstream #138204 (draft): edge-tts 7.3.0 handles Microsoft's new
-  # Sec-MS-GEC tokens; with 7.2.7 every Edge TTS synthesis gets a 403
-  # (#137944). Drop it once upstream ships the bump.
-  patch --batch --fuzz=0 -Np1 -i "${srcdir}/edge-tts-7.3.0.patch"
 }
 
 build() {
