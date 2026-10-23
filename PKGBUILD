@@ -11,15 +11,16 @@ _commit=bf0203a794a07aac3ff764972ab9087baa4e4f4e
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
+_uvmin=0.13.5                      # pm's uv pin (pm/lock.json); check() stops when it moves
 pkgver=0.22.5
-pkgrel=1
+pkgrel=2
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
 license=('MIT')
 depends=(
   'python>=3.14' 'python<3.15'   # the minor in _pyver
-  'nodejs' 'npm' 'uv' 'ripgrep' 'ffmpeg'
+  'nodejs' 'npm' "uv>=${_uvmin}" 'ripgrep' 'ffmpeg'
   # the libraries of pm's Chromium (`hermes pm install agent-browser`)
   'nss' 'atk' 'at-spi2-core' 'cups' 'libdrm' 'libxkbcommon' 'mesa' 'pango'
   'cairo' 'alsa-lib' 'libxcomposite' 'libxdamage' 'libxrandr'
@@ -111,6 +112,17 @@ check() {
   test -s ui-tui/dist/entry.js
   PYTHONPATH="$PWD" venv/bin/python -c \
     'import hermes_cli.main, anthropic, edge_tts, ddgs, lark_oapi, mautrix, dingtalk_stream, defusedxml'
+
+  # pm runs the system uv from the system-tools store. Plugins with Python
+  # dependencies make it re-resolve uv.lock, which an older uv than pm's pin
+  # can fail (uv 0.13.4 on the v0.22.5 lock: NousResearch/hermes-agent#143254).
+  # depends=() asks for at least the pin; stop when upstream moves it.
+  local uv_pin
+  uv_pin="$(venv/bin/python -c 'import json, sys; print(json.load(open(sys.argv[1]))["packages"]["uv"]["version"])' pm/lock.json)"
+  if (( $(vercmp "${uv_pin}" "${_uvmin}") > 0 )); then
+    printf 'ERROR: pm pins uv %s, depends=() asks for uv>=%s: raise _uvmin (and aur/PKGBUILD)\n' "${uv_pin}" "${_uvmin}"
+    return 1
+  fi
 }
 
 package() {
