@@ -85,15 +85,7 @@ CLI, TUI and desktop sessions. `~/.hermes/.env` wins over both.
   date `hermes --version` prints. Drop it once upstream ships the fix: the
   build then stops on it.
 
-- `edge-tts-7.3.0.patch` — applied in `prepare()`: the `pyproject.toml` and
-  `uv.lock` part of upstream's draft
-  [#138204](https://github.com/NousResearch/hermes-agent/pull/138204).
-  Microsoft changed the `Sec-MS-GEC` token of the Edge TTS service; edge-tts
-  7.2.7, which upstream pins, gets a 403 for every synthesis (#137944). The
-  patch moves the pin to 7.3.0, exempted from upstream's 3-day release-age
-  window like in the draft. Drop it once upstream ships the bump.
-
-  These three patches are the only changes to upstream's code. `package()` only
+  These two patches are the only changes to upstream's code. `package()` only
   rewrites build paths in `web_dist/hermes-build.json`, stubs out the TUI's
   `build.mjs`, strips the venv's native libraries and adds files beside the code (bytecode, install stamp, system-tools
   store, the TUI bundle's `package.json`). The release notes link every patch.
