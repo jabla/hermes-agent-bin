@@ -19,7 +19,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Manual dispatch with "bump": move PKGBUILD to the latest upstream release
   # and open an auto-merge PR (never commits to main directly). Build/smoke/
-  # release/aur-sync are triggered by the PR checks and the push that follows
+  # wrapper/release/aur-sync are triggered by the PR checks and the push that follows
   # the merge. There is no schedule: a new upstream release needs thorough
   # testing before it is packaged, so a maintainer starts the bump after
   # reading the release.
@@ -97,14 +97,14 @@ jobs:
             python3 scripts/bump-pkgbuild.py --pr
 
   # ---------------------------------------------------------------------------
-  # Build + smoke: run for PRs (merge gate), pushes to main (after merge) and
+  # Build, smoke and wrapper: run for PRs (merge gate), pushes to main (after merge) and
   # manual dispatch.
   # A push whose pkgver-pkgrel is already released (CI, scripts, docs) skips
-  # them: its PR run built and smoked the change, and release would skip.
+  # them: its PR run built and checked the change, and release would skip.
   # ---------------------------------------------------------------------------
   plan:
     # Skipped when a manual dispatch only runs the bump. This also keeps
-    # build, smoke and release off those runs: build only runs when plan was
+    # build, smoke, wrapper and release off those runs: build only runs when plan was
     # not skipped.
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.bump) }}
     runs-on: ubuntu-latest
@@ -138,7 +138,7 @@ jobs:
           TAG="v${PKGVER}-${PKGREL}"
           # A failed lookup counts as not released: build as before.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG exists: skipping build, smoke and release"
+            echo "Release $TAG exists: skipping build, smoke, wrapper and release"
             echo released=true >> "$GITHUB_OUTPUT"
           else
             echo "Release $TAG not found"
@@ -173,8 +173,8 @@ jobs:
           done
           [ -n "$pr" ] || build "no merged pull request from $repo"
           read -r number head <<<"$pr"
-          # Auto-merge fires when smoke passes; the run itself may finish a
-          # few seconds later.
+          # Auto-merge fires when the last required check passes; the run
+          # itself may finish a few seconds later.
           for attempt in 1 2 3 4; do
             run=$(gh api "repos/$repo/actions/workflows/build.yml/runs?event=pull_request&head_sha=$head&status=success&per_page=1" \
                     --jq '.workflow_runs[0].id // empty') || build "run lookup failed"
@@ -200,7 +200,7 @@ jobs:
   build:
     needs: plan
     # Skip only when plan reported an existing release. A failed plan must not
-    # skip build and smoke: skipped required checks count as passed.
+    # skip build, smoke and wrapper: skipped required checks count as passed.
     if: ${{ !cancelled() && needs.plan.result != 'skipped' && needs.plan.outputs.released != 'true' && needs.plan.outputs.reuse_run == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -262,48 +262,15 @@ jobs:
       - name: Trim the uv cache
         run: runuser -u builder -- uv cache prune --ci
 
-      # AUR users install aur/PKGBUILD re-wrapping this artifact, not the
-      # artifact itself, so build the wrapper from it the way their makepkg
-      # does (the file in place of the download) and compare the payloads.
-      - name: Build the AUR wrapper from this artifact
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          artifact=$(ls hermes-agent-bin-*-x86_64.pkg.tar.zst)
-          prebuilt=$(sed -nE 's/^\tnoextract = //p' aur/.SRCINFO)
-          sha=$(sha256sum "$artifact" | cut -d' ' -f1)
-          work=$(mktemp -d)
-          cp aur/PKGBUILD "$work/"
-          cp "$artifact" "$work/$prebuilt"
-          # Pin the artifact's sha the way aur-sync does for the release.
-          sed -i -E "s|^(sha256sums=\(')[0-9a-f]{64}('\))|\1${sha}\2|" "$work/PKGBUILD"
-          grep -qx "sha256sums=('${sha}')" "$work/PKGBUILD"
-          chown -R builder:builder "$work"
-          # Twice: a rebuild must still find the download intact. A wrapper
-          # whose download is named like its own output overwrites it.
-          runuser -u builder -- sh -c 'cd "$1" && makepkg -f --noconfirm && makepkg -f --noconfirm' sh "$work"
-          # Same files, modes, links and sha256 digests as the artifact;
-          # only mtimes and the package metadata differ.
-          manifest() {
-            bsdtar -xOf "$1" .MTREE | gzip -dc |
-              grep -vE '^\./\.(BUILDINFO|PKGINFO) ' | sed -E 's/ time=[0-9.]+//'
-          }
-          if ! diff -u <(manifest "$artifact") <(manifest "$work/$artifact") > /tmp/wrapper.diff; then
-            echo "::error::the AUR wrapper does not install the artifact's payload unchanged"
-            head -n 60 /tmp/wrapper.diff
-            exit 1
-          fi
-          echo "WRAPPER-OK: aur/PKGBUILD reproduces the artifact's payload ($(manifest "$artifact" | wc -l) manifest lines)"
-
       - name: Upload package artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkg
           path: '*.pkg.tar.zst'
           if-no-files-found: error
-          # Smoke and the release need it (the release of a merged pull
-          # request takes it from that pull request's run); the release keeps
-          # the file.
+          # Smoke, wrapper and the release need it (the release of a merged
+          # pull request takes it from that pull request's run); the release
+          # keeps the file.
           retention-days: 3
 
       # The tree this run built, for the release of the merged pull request.
@@ -320,6 +287,73 @@ jobs:
           path: build-info/tree
           if-no-files-found: error
           retention-days: 3
+
+  # AUR users install aur/PKGBUILD re-wrapping this artifact, not the artifact
+  # itself, so build the wrapper from it the way their makepkg does (the file
+  # in place of the download) and compare the payloads. Its own job: it runs
+  # beside smoke instead of after the build.
+  wrapper:
+    runs-on: ubuntu-latest
+    needs: build
+    # Explicit, or a failed plan would skip it despite a green build.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    timeout-minutes: 15
+    container:
+      image: archlinux:latest
+    steps:
+      # makepkg and bsdtar come with pacman; package() runs under fakeroot,
+      # the payload comparison needs diff.
+      - name: Install fakeroot and diff
+        run: pacman -Syu --noconfirm --needed fakeroot diffutils
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg
+          path: pkg
+
+      - name: Build the AUR wrapper from this artifact
+        run: |
+          set -euo pipefail
+          artifact=$(cd pkg && ls hermes-agent-bin-*-x86_64.pkg.tar.zst)
+          prebuilt=$(sed -nE 's/^\tnoextract = //p' aur/.SRCINFO)
+          sha=$(sha256sum "pkg/$artifact" | cut -d' ' -f1)
+          useradd -m builder
+          work=$(mktemp -d)
+          cp aur/PKGBUILD "$work/"
+          cp "pkg/$artifact" "$work/$prebuilt"
+          # Pin the artifact's sha the way aur-sync does for the release.
+          sed -i -E "s|^(sha256sums=\(')[0-9a-f]{64}('\))|\1${sha}\2|" "$work/PKGBUILD"
+          grep -qx "sha256sums=('${sha}')" "$work/PKGBUILD"
+          chown -R builder:builder "$work"
+          # --nodeps: this compares the payload; smoke installs the runtime.
+          runuser -u builder -- sh -c 'cd "$1" && makepkg -f --noconfirm --nodeps' sh "$work"
+          # A rebuild must still find the download intact. A wrapper whose
+          # download is named like its own output overwrites it.
+          if ! echo "${sha}  $work/$prebuilt" | sha256sum -c --quiet; then
+            echo "::error::makepkg overwrote the wrapper's download $prebuilt"
+            exit 1
+          fi
+          # Same files, modes, links and sha256 digests as the artifact;
+          # only mtimes and the package metadata differ.
+          manifest() {
+            bsdtar -xOf "$1" .MTREE | gzip -dc |
+              grep -vE '^\./\.(BUILDINFO|PKGINFO) ' | sed -E 's/ time=[0-9.]+//'
+          }
+          # Not in <(...): a failed manifest() would go unnoticed there and two
+          # empty lists compare equal.
+          manifest "pkg/$artifact" > /tmp/artifact.mtree
+          manifest "$work/$artifact" > /tmp/wrapper.mtree
+          if [ ! -s /tmp/artifact.mtree ]; then
+            echo "::error::no manifest read from $artifact"; exit 1
+          fi
+          if ! diff -u /tmp/artifact.mtree /tmp/wrapper.mtree > /tmp/wrapper.diff; then
+            echo "::error::the AUR wrapper does not install the artifact's payload unchanged"
+            head -n 60 /tmp/wrapper.diff
+            exit 1
+          fi
+          echo "WRAPPER-OK: aur/PKGBUILD reproduces the artifact's payload ($(wc -l < /tmp/artifact.mtree) manifest lines)"
 
   smoke:
     runs-on: ubuntu-latest
@@ -693,9 +727,9 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     runs-on: ubuntu-latest
-    needs: [plan, build, smoke]
-    # Built and smoked here, or taken over from the merged pull request's run.
-    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && ((needs.build.result == 'success' && needs.smoke.result == 'success') || (needs.plan.result == 'success' && needs.plan.outputs.reuse_run != '')) }}
+    needs: [plan, build, smoke, wrapper]
+    # Built and checked here, or taken over from the merged pull request's run.
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && ((needs.build.result == 'success' && needs.smoke.result == 'success' && needs.wrapper.result == 'success') || (needs.plan.result == 'success' && needs.plan.outputs.reuse_run != '')) }}
     timeout-minutes: 10
     permissions:
       contents: write
