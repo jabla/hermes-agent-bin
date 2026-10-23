@@ -55,8 +55,8 @@ _extract_dir() {
 prepare() {
   cd "$(_extract_dir)"
 
-  # The archive's mtimes are the upstream commit time. Record it before the
-  # patches below change pyproject.toml; package() writes it into the stamp.
+  # The archive's mtimes are the upstream commit time. Record it before a
+  # patch can change pyproject.toml; package() writes it into the stamp.
   stat -c %Y pyproject.toml > "${srcdir}/commit-date"
 
   # --fuzz=0: a hunk whose context drifted must fail loudly instead of being
