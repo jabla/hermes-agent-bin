@@ -586,6 +586,46 @@ jobs:
           print(f"SYSTEM-TOOLS-OK: node {node}, npx/uvx run, children, cron and unit on the venv, extras installed")
           PY
 
+      - name: A plugin with Python dependencies is admitted (fresh non-root user)
+        run: |
+          set -euo pipefail
+          # Admission re-resolves core's uv.lock with the plugin as a
+          # workspace member, on the system uv (NousResearch/hermes-agent#143254).
+          useradd -m plugin
+          runuser -u plugin -- bash -euo pipefail <<'SH'
+          dir="$HOME/.hermes/plugins/depcheck"
+          mkdir -p "$dir"
+          cat > "$dir/plugin.yaml" <<'EOF'
+          name: depcheck
+          label: Depcheck
+          kind: standalone
+          version: 0.1.0
+          description: smoke plugin with a Python dependency
+          requires_hermes: ">=0.22.0"
+          provides_tools: []
+          provides_hooks: []
+          EOF
+          cat > "$dir/pyproject.toml" <<'EOF'
+          [project]
+          name = "hermes-depcheck"
+          version = "0.1.0"
+          requires-python = ">=3.11"
+          dependencies = ["aiohttp>=3.9,<4"]
+          EOF
+          printf 'def register(ctx):\n    pass\n' > "$dir/__init__.py"
+          if ! out=$(timeout 300 hermes plugins enable depcheck 2>&1); then
+            printf '%s\n' "$out" | tail -n 15
+            echo "SMOKE-FAIL: hermes plugins enable refused a plugin with a Python dependency on $(uv --version)"
+            exit 1
+          fi
+          row=$(hermes plugins list 2>&1 | grep -F depcheck || true)
+          if [[ $row != *enabled* || $row == *'not enabled'* ]]; then
+            echo "SMOKE-FAIL: depcheck is not listed as enabled: ${row:-no row}"
+            exit 1
+          fi
+          echo "SMOKE-OK: plugin with a Python dependency admitted on $(uv --version)"
+          SH
+
       - name: Browser tools take a system browser (fresh non-root user)
         run: |
           set -euo pipefail
