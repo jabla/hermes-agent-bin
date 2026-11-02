@@ -4,7 +4,7 @@
      scratch cleanup may delete, leaving the launcher to exit 127 forever
      (#131745). It still supplies the store when the tree records none.
      """
-+    # hermes-agent-bin: the venv runs on Arch's python. The packaged store
++    # Arch packages: the venv runs on Arch's python. The packaged store
 +    # records the system python only so pm's uv resolves (uvx MCP servers);
 +    # there it is a tool, not the interpreter Hermes runs on.
 +    from hermes_cli.steward import read_install_stamp
