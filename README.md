@@ -15,27 +15,31 @@ This replaces the source package `hermes-agent` (they conflict). It provides
 
 ### Browser tools
 
-The browser tools drive a Chromium through `agent-browser`. Either use a
-system browser:
+`browser_exec` drives a Chromium over the DevTools protocol (agent-browser left
+hermes after v0.22.5). It takes the first of these:
+
+1. `browser.executable_path` (`hermes config set browser.executable_path /usr/bin/chromium`)
+2. hermes' pinned Chromium in `~/.hermes/tools`, fetched once per user with
+   `hermes pm install chromium`
+3. a system browser on `PATH`: `google-chrome-stable`, `google-chrome`,
+   `chromium`, `chromium-browser`, `brave` (`system-browser-fallback.patch`)
 
 ```bash
-yay -S agent-browser-bin chromium   # or google-chrome / brave-bin
+yay -S chromium   # or google-chrome / brave-bin
 ```
 
-`/usr/bin/hermes` points the tools at the first of `google-chrome-stable`,
-`google-chrome`, `chromium` and `brave` on `PATH` (`AGENT_BROWSER_EXECUTABLE_PATH`;
-set it yourself to pick another). Or let hermes fetch its pinned agent-browser
-and Chromium into `~/.hermes/tools`, once per user:
+Nothing writes the pick into your config, so removing a browser needs no
+config change. The launcher exports no browser: the config migration of
+hermes' first start after v0.22.5 moves `AGENT_BROWSER_EXECUTABLE_PATH` from
+`~/.hermes/.env` and from the launch environment into `config.yaml`, where it
+stays as `browser.executable_path`.
 
-```bash
-hermes pm install agent-browser
-```
+### Webapp
 
-A system browser wins over pm's Chromium; an empty
-`AGENT_BROWSER_EXECUTABLE_PATH=` keeps pm's. Processes started without
-`/usr/bin/hermes`, like the gateway service, get the same pick from the venv
-itself (`hermes_agent_bin_env.py`). Since 0.22.4 that service also runs the
-CLI, TUI and desktop sessions. `~/.hermes/.env` wins over both.
+`hermes webapp` opens the browser-hosted desktop the gateway serves (set
+`webapp.enabled: true` first). The package ships the bundle in
+`/opt/hermes-agent/apps/desktop/dist-webapp`; `HERMES_WEBAPP_DIST` points hermes
+at it, which would otherwise build one into the root-owned tree.
 
 ## How it works
 
@@ -55,8 +59,9 @@ CLI, TUI and desktop sessions. `~/.hermes/.env` wins over both.
   Lazy installs are off for the root-owned venv, so it
   ships the extras users commonly need beyond `all` and `messaging`, as the
   reference package does: `anthropic`, `edge-tts` (default TTS), `ddgs` (free
-  web search), `doc-extract` and the gateways feishu, matrix, dingtalk, wecom,
-  teams and google-chat.
+  web search), `doc-extract`, `keychain` (`hermes vault key migrate --to
+  keychain`) and the gateways feishu, matrix, dingtalk, wecom, teams and
+  google-chat.
 - `system-tools.py` — run by `package()`: builds `/opt/hermes-agent/system-store`,
   a store for upstream's package manager (pm) whose required tools (node, npm,
   ffmpeg, ripgrep, python, uv) are symlinks into `/usr/bin` under the pins of
@@ -89,11 +94,17 @@ CLI, TUI and desktop sessions. `~/.hermes/.env` wins over both.
   dates them from the stamp's `commitDate` (the tagged commit); `smoke` checks the
   date `hermes --version` prints. Drop it once upstream ships the fix: the
   build then stops on it.
+- `system-browser-fallback.patch` — applied in `prepare()`: with lazy installs
+  off, pm never fetches its Chromium on demand, while upstream takes a system
+  browser only where pm builds none (Termux). The patch lets `browser_exec`
+  take a system Chrome, Chromium or Brave from `PATH` after
+  `browser.executable_path` and pm's installed Chromium. When none is found,
+  its hint names those options. `smoke` checks the order.
 
-  These two patches are the only changes to upstream's code. `package()` only
+  These three patches are the only changes to upstream's code. `package()` only
   rewrites build paths in `web_dist/hermes-build.json`, stubs out the TUI's
   `build.mjs`, strips the venv's native libraries and adds files beside the code (bytecode, install stamp, system-tools
-  store, the TUI bundle's `package.json`). The release notes link every patch.
+  store, the TUI bundle's `package.json`, the webapp bundle). The release notes link every patch.
 - `aur/PKGBUILD` — the AUR *wrapper*, source of truth for
   [hermes-agent-bin on the AUR](https://aur.archlinux.org/packages/hermes-agent-bin).
   Its `source` points at the GitHub Release artifact, stored under a name that
@@ -114,7 +125,7 @@ CLI, TUI and desktop sessions. `~/.hermes/.env` wins over both.
 - **Copies of this repository** (forks, a private CI test repository): the AUR push only runs in `jabla/hermes-agent-bin`. Elsewhere `aur-sync` prints the diff it would push, so pipeline changes can be tested end to end without publishing anything.
 - **Files from root runs**: hermes run as root writes into `/opt/hermes-agent` (bytecode, packages a lazy install puts into the venv). These files belong to no package. When an update ships a file at the same path, pacman stops with `... exists in filesystem`: since 0.22.1-1 for bytecode (`__pycache__/*.cpython-314.pyc`), since 0.22.0-2 for `venv/bin/ddgs`. Both are safe to replace: `yay -S hermes-agent-bin --overwrite '/opt/hermes-agent/*.pyc'` (or `--overwrite '/opt/hermes-agent/venv/bin/ddgs'`). After an update from 0.21.5 or older (bundled CPython 3.11), pacman may warn that a `python3.11` directory under `/opt/hermes-agent` is not empty: remove it, nothing uses it any more.
 - **Packaging-only changes** (build steps, launcher, dependencies, the wrapper): bump `pkgrel` in both PKGBUILDs, or the release tag already exists and nothing new is published.
-- **Reference package**: `PKGBUILD` follows the AUR source package `hermes-agent` (build steps, extras, launcher and its environment). It took over `system-tools.py` and an adapted `keep-venv-interpreter.patch` (it also accepts `distribution: package-manager`) from this repository. Differences: the upper Python pin (`python<3.15`), the install stamp (upstream's script, `distribution: pacman`), `release-date-from-stamp.patch`, the bytecode, the TUI bundle's `package.json`, the rewritten `hermes-build.json` paths, the browser setup (`agent-browser` and a browser are optional here; the launcher stays silent without one), the launcher's answer to `--print-runtime-command` (desktop 0.22.4), `uv>=` pm's uv pin (`_uvmin`, see `system-tools.py` above), `hermes_agent_bin_env.py` (the launcher's environment for venv processes started without it) and the reference's `HERMES_NODE` export (the system-tools store already supplies node). The bump job warns ("Drift from hermes-agent", also in the bump PR) when that PKGBUILD changes beyond its version fields (`pkgver`, `pkgrel`, `_commit`, `_commit_date`, the tarball checksum, comment lines); the checksums of the reference's own files count as a change. Review the change in its [AUR history](https://aur.archlinux.org/cgit/aur.git/log/?h=hermes-agent), port what applies, then set `REFERENCE_PKGBUILD_SHA256` in `scripts/bump-pkgbuild.py` to the value the warning prints.
+- **Reference package**: `PKGBUILD` follows the AUR source package `hermes-agent` (build steps, extras, launcher and its environment). It took over `system-tools.py`, an adapted `keep-venv-interpreter.patch` (it also accepts `distribution: package-manager`) and `system-browser-fallback.patch` from this repository; both build the webapp bundle. Differences: the upper Python pin (`python<3.15`), the install stamp (upstream's script, `distribution: pacman`), `release-date-from-stamp.patch`, the bytecode, the TUI bundle's `package.json`, the rewritten `hermes-build.json` paths, the launcher's answer to `--print-runtime-command` (desktop 0.22.4), `uv>=` pm's uv pin (`_uvmin`, see `system-tools.py` above), `hermes_agent_env.py` (the launcher's environment for venv processes started without it) and the reference's `HERMES_NODE` export (the system-tools store already supplies node). The bump job warns ("Drift from hermes-agent", also in the bump PR) when that PKGBUILD changes beyond its version fields (`pkgver`, `pkgrel`, `_commit`, `_commit_date`, the tarball checksum, comment lines); the checksums of the reference's own files count as a change. Review the change in its [AUR history](https://aur.archlinux.org/cgit/aur.git/log/?h=hermes-agent), port what applies, then set `REFERENCE_PKGBUILD_SHA256` in `scripts/bump-pkgbuild.py` to the value the warning prints.
 - **AUR wrapper**: only `pkgver`/`pkgrel` are bumped there; its `sha256sums` is the release artifact's, computed after the build by `aur-sync` (a local `makepkg` yields a different hash).
 - **hermes-agent-desktop-bin** runs the desktop app's backend through this package's `/usr/bin/hermes`. It depends on `hermes-agent>=<version>` like the AUR source package `hermes-agent-desktop`, which is why `provides=()` carries the version (the smoke job checks it). Its smoke job installs a pinned release artifact of this repository by its asset name. The app asks `/usr/bin/hermes --print-runtime-command` for the interpreter it mints gateway tickets with; the launcher answers through upstream's `hermes_cli._launchers` (the venv python). Changing the launcher path, the provides entry or the asset names needs the same change there.
 - **AUR key**: keep `AUR_SSH_KEY` as a secret of the `aur` environment, with deployment branches limited to `main` — repository secrets are readable by pull requests from branches of this repository. The same key also publishes `hermes-agent-desktop-bin`, and AUR keys can push to every package of the account, so both repositories need the same environment setup.

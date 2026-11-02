@@ -6,31 +6,30 @@
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
 # installed package never compiles anything.
 pkgname=hermes-agent-bin
-_pkgver_tag=v0.22.5
-_commit=bf0203a794a07aac3ff764972ab9087baa4e4f4e
+_pkgver_tag=v0.22.6
+_commit=f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab
 _tagver=${_pkgver_tag#v}           # tag without the leading v — GitHub strips it from the archive dir
 _optname=hermes-agent              # fixed install dir (pkgname-independent, matches source pkg)
 _pyver=3.14                        # Arch's python minor; keep depends=() in step
 _uvmin=0.13.5                      # pm's uv pin (pm/lock.json); check() stops when it moves
-pkgver=0.22.5
-pkgrel=2
+pkgver=0.22.6
+pkgrel=1
 pkgdesc="Locally-run AI agent with tool use, web browsing, and automation (prebuilt binary, CI-built)"
 arch=('x86_64')
 url='https://github.com/NousResearch/hermes-agent'
 license=('MIT')
 depends=(
   'python>=3.14' 'python<3.15'   # the minor in _pyver
-  'nodejs' 'npm' "uv>=${_uvmin}" 'ripgrep' 'ffmpeg'
-  # the libraries of pm's Chromium (`hermes pm install agent-browser`)
+  'nodejs>=26' 'npm' "uv>=${_uvmin}" 'ripgrep' 'ffmpeg'
+  # the libraries of pm's Chromium (`hermes pm install chromium`)
   'nss' 'atk' 'at-spi2-core' 'cups' 'libdrm' 'libxkbcommon' 'mesa' 'pango'
   'cairo' 'alsa-lib' 'libxcomposite' 'libxdamage' 'libxrandr'
   'git' 'curl'
 )
 optdepends=(
-  'agent-browser: browser tools on a system browser (AUR)'
-  'chromium: system browser for the browser tools'
-  'google-chrome: system browser for the browser tools (AUR)'
-  'brave-bin: system browser for the browser tools (AUR)'
+  'chromium: system browser for browser_exec (browser.executable_path)'
+  'google-chrome: system browser for browser_exec (browser.executable_path, AUR)'
+  'brave-bin: system browser for browser_exec (browser.executable_path, AUR)'
 )
 makedepends=('rsync' 'cmake')   # cmake: python-olm (matrix extra)
 conflicts=('hermes-agent')
@@ -40,14 +39,16 @@ source=(
   "hermes-agent-${_tagver}.tar.gz::${url}/archive/refs/tags/${_pkgver_tag}.tar.gz"
   'keep-venv-interpreter.patch'
   'release-date-from-stamp.patch'
+  'system-browser-fallback.patch'
   'system-tools.py'
-  'hermes_agent_bin_env.py'
+  'hermes_agent_env.py'
 )
-sha256sums=('a8f67e5ec14fea681acef6cc7ff1553f002bb6101fd2df22bfdd4b7eecc54eb2'
-            '8a371d1fb5e0a1fb7a20eeb1f0f4250a70cc8ce26aef47fc19fdc77af88a7d52'
+sha256sums=('2add026d44c602d8b911f7ef366bd3860505e0cd124e935aa78e09fd7e814091'
+            'f6824d0250926db151b0a06043a8385a642d83048e2b73967625362076b7d818'
             '107cf7f981e7a96466d7c3f2a2cc1b8cdf2c1a5db797c22087b27f2e7f64541f'
+            '196ba6f200257073a5f02bab284a11594e67bfe1e10470a83ab0fc9437ef777b'
             '5950d73a49526767dfac20084d8c5597b7ebf5c16e7bff99e31dc4d7fe0d139d'
-            '0a27e919682e670e642c0a82130abf3a681e11de0d2442663e768ff9fd4812d9')
+            'c8a782bbee797b064db590d7b6e01963e0c31db7eea7ce2be13fe33a11726b6a')
 
 _extract_dir() {
   echo "${srcdir}/hermes-agent-${_tagver}"
@@ -67,6 +68,10 @@ prepare() {
   # commitDate, not the stale 2026.9.24 literal. Drop it once upstream ships
   # the fix; until then this hunk fails loudly when __init__.py moves.
   patch --batch --fuzz=0 -Np1 -i "${srcdir}/release-date-from-stamp.patch"
+  # Lazy installs are off here, so pm never fetches its Chromium on demand:
+  # browser_exec falls back to a system Chrome, Chromium or Brave instead of
+  # needing browser.executable_path.
+  patch --batch --fuzz=0 -Np1 -i "${srcdir}/system-browser-fallback.patch"
 }
 
 build() {
@@ -80,6 +85,12 @@ build() {
   npm run build --workspace web
   npm run build:ink --workspace ui-tui
   npm run build --workspace ui-tui
+  # The browser-hosted Desktop (`hermes webapp`, new after v0.22.5). Hermes
+  # would build it into its install root on first use, which is root-owned
+  # here; HERMES_WEBAPP_DIST (launcher and hermes_agent_env.py) makes it
+  # serve this bundle as it is. Its private npm workspace (.build/) stays out
+  # of the package.
+  node apps/desktop/scripts/build-webapp.mjs
 
   # The venv runs on Arch's python (upstream supports 3.14 since v0.21.6,
   # requires-python ">=3.11,<3.15"). A venv only works on the minor version
@@ -93,15 +104,17 @@ build() {
     venv
   # Lazy installs are off for the root-owned venv, so the extras users
   # commonly hit ship here, as in the reference package: anthropic (Anthropic
-  # provider), edge-tts (default TTS), ddgs (free web search), doc-extract and
-  # the gateways beyond messaging. python-olm (matrix) builds a vendored libolm
-  # whose cmake_minimum_required CMake >= 4 rejects unless the policy minimum
-  # is raised.
+  # provider), edge-tts (default TTS), ddgs (free web search), doc-extract,
+  # keychain (`hermes vault key migrate --to keychain`) and the gateways
+  # beyond messaging. The documents extras stay out: skills build their own
+  # side environment (`hermes pm environment documents`). python-olm (matrix)
+  # builds a vendored libolm whose cmake_minimum_required CMake >= 4 rejects
+  # unless the policy minimum is raised.
   CMAKE_POLICY_VERSION_MINIMUM=3.5 \
   UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT="$PWD/venv" \
     uv sync --locked --no-dev --no-install-project \
-      --extra all,messaging,anthropic,edge-tts,ddgs,doc-extract \
+      --extra all,messaging,anthropic,edge-tts,ddgs,doc-extract,keychain \
       --extra feishu,matrix,dingtalk,wecom,teams,google-chat
 }
 
@@ -110,8 +123,9 @@ check() {
 
   test -s hermes_cli/web_dist/index.html
   test -s ui-tui/dist/entry.js
+  test -s apps/desktop/dist-webapp/index.html
   PYTHONPATH="$PWD" venv/bin/python -c \
-    'import hermes_cli.main, anthropic, edge_tts, ddgs, lark_oapi, mautrix, dingtalk_stream, defusedxml'
+    'import hermes_cli.main, anthropic, edge_tts, ddgs, keyring, lark_oapi, mautrix, dingtalk_stream, defusedxml'
 
   # pm runs the system uv from the system-tools store. Plugins with Python
   # dependencies make it re-resolve uv.lock, which an older uv than pm's pin
@@ -141,7 +155,7 @@ package() {
     --exclude='web/eslint.config.js' --exclude='web/README.md' \
     --exclude='ui-tui/src' --exclude='ui-tui/node_modules' \
     --exclude='scripts/tests' --exclude='scripts/install.*' \
-    --exclude='build' --exclude='/tests' \
+    --exclude='build' --exclude='/tests' --exclude='/.build' \
     . "$_optdir/"
 
   echo "console.log('skipping build, using prebuilt dist/entry.js')" > "$_optdir/ui-tui/scripts/build.mjs"
@@ -206,10 +220,10 @@ PY
   install -d "$_sitedir"
   # The launcher's environment for every python of the venv, also the ones
   # started without the launcher (the gateway service unit).
-  install -m644 "$srcdir/hermes_agent_bin_env.py" "$_sitedir/"
+  install -m644 "$srcdir/hermes_agent_env.py" "$_sitedir/"
   {
     echo "import sys; sys.path.insert(0, \"/opt/${_optname}\")"
-    echo "import hermes_agent_bin_env"
+    echo "import hermes_agent_env"
   } > "$_sitedir/hermes.pth"
 
   # Bytecode for the whole tree: users cannot write __pycache__ into the
@@ -245,30 +259,21 @@ PY
     echo ': "${XDG_DATA_HOME:=$HOME/.local/share}"'
     echo 'export HERMES_DISABLE_LAZY_INSTALLS=1'
     echo 'export HERMES_LAZY_INSTALL_TARGET="$XDG_DATA_HOME/hermes-agent/python"'
+    echo "export HERMES_WEBAPP_DIST=/opt/${_optname}/apps/desktop/dist-webapp"
     # Installation launchers answer --print-runtime-command with the
     # interpreter command of their tree as JSON; the desktop app mints its
     # gateway tickets with that interpreter. Upstream's launchers answer
     # through this module. keep-venv-interpreter.patch makes it name the venv
     # python whatever HERMES_HOME says. The command it reports runs hermes
-    # without this launcher; hermes_agent_bin_env.py supplies the exports
+    # without this launcher; hermes_agent_env.py supplies the exports
     # there. -I -B as in upstream's launchers: no cwd on sys.path, no
     # bytecode writes.
     echo 'if [[ ${1-} == --print-runtime-command ]]; then'
     echo "  exec /opt/${_optname}/venv/bin/python -I -B -m hermes_cli._launchers" '"$@"'
     echo 'fi'
-    # The browser tools take a system browser only through this variable
-    # (it wins over pm's own Chromium). Without one they need
-    # `hermes pm install agent-browser`, which also fetches pm's Chromium.
-    # An empty value keeps pm's Chromium. The order is the desktop app's
-    # launcher's, which exports its pick before it runs this one.
-    echo 'if [[ -z "${AGENT_BROWSER_EXECUTABLE_PATH+set}" ]]; then'
-    echo '  for browser in google-chrome-stable google-chrome chromium brave; do'
-    echo '    if browser_path=$(type -P "$browser"); then'
-    echo '      export AGENT_BROWSER_EXECUTABLE_PATH="$browser_path"'
-    echo '      break'
-    echo '    fi'
-    echo '  done'
-    echo 'fi'
+    # No browser export: browser_exec reads only browser.executable_path
+    # (then pm's Chromium). The config migration to v52 would write an
+    # exported AGENT_BROWSER_EXECUTABLE_PATH into the user's config.yaml.
     echo "exec /opt/${_optname}/venv/bin/python -m hermes_cli.main" '"$@"'
   } > "$pkgdir/usr/bin/hermes"
 

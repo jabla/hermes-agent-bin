@@ -524,7 +524,7 @@ jobs:
             exit 1
           fi
           # The reported command itself starts the same hermes (without the
-          # launcher; its environment comes from hermes_agent_bin_env.py).
+          # launcher; its environment comes from hermes_agent_env.py).
           if ! reported=$("$py" -c 'import json, subprocess, sys; subprocess.run(json.loads(sys.argv[1]) + ["--version"], check=True)' "$runtime" 2>&1); then
             echo "SMOKE-FAIL: the reported runtime command failed:"
             echo "$reported"
@@ -660,66 +660,119 @@ jobs:
           echo "SMOKE-OK: plugin with a Python dependency admitted on $(uv --version)"
           SH
 
-      - name: Browser tools take a system browser (fresh non-root user)
+      - name: Processes without the launcher get its environment
         run: |
           set -euo pipefail
-          # Stand-ins: this checks where hermes looks, not the browser itself.
-          install -d -m 755 /tmp/fakebin
-          for tool in agent-browser brave; do
-            printf '#!/bin/sh\necho "%s 0.0.0"\n' "$tool" > "/tmp/fakebin/$tool"
-          done
-          chmod 755 /tmp/fakebin/*
-          # The launcher exports the first system browser it finds and keeps
-          # a value the user set, an empty one included (pm's Chromium). Run it
-          # up to its exec line.
+          # The gateway service unit and the command --print-runtime-command
+          # reports run the venv python without /usr/bin/hermes:
+          # hermes_agent_env.py sets the launcher's exports there, a value
+          # the caller set wins. The launcher ends with its exec line; run it
+          # up to there.
           last='exec /opt/hermes-agent/venv/bin/python -m hermes_cli.main "$@"'
           if [ "$(tail -n 1 /usr/bin/hermes)" != "$last" ]; then
             echo "SMOKE-FAIL: the launcher no longer ends with: $last"
             exit 1
           fi
-          { sed '$d' /usr/bin/hermes; echo 'printf "%s" "${AGENT_BROWSER_EXECUTABLE_PATH:-}"'; } > /tmp/launcher-env
-          check_pick() {   # expected value, then the caller's environment
+          { sed '$d' /usr/bin/hermes; echo 'printf "%s %s %s" "$HERMES_DISABLE_LAZY_INSTALLS" "$HERMES_LAZY_INSTALL_TARGET" "$HERMES_WEBAPP_DIST"'; } > /tmp/launcher-env
+          check_env() {   # expected "lazy target webapp", then the caller's environment
             local want=$1 got
             shift
-            got=$(env -u AGENT_BROWSER_EXECUTABLE_PATH PATH="/tmp/fakebin:$PATH" "$@" bash /tmp/launcher-env)
-            if [ "$got" != "$want" ]; then
-              echo "SMOKE-FAIL: launcher browser '$got', expected '$want' (with: $*)"
-              exit 1
-            fi
-          }
-          check_pick /tmp/fakebin/brave
-          check_pick /opt/own/browser AGENT_BROWSER_EXECUTABLE_PATH=/opt/own/browser
-          check_pick "" AGENT_BROWSER_EXECUTABLE_PATH=
-          # Started without the launcher (the gateway service unit, the
-          # command --print-runtime-command reports), the venv python gets
-          # the same environment from hermes_agent_bin_env.py.
-          check_venv_env() {   # expected browser and target, then the caller's environment
-            local want="1 $2 $1" got
-            shift 2
-            got=$(env -i HOME=/tmp/envhome PATH="/tmp/fakebin:$PATH" "$@" /opt/hermes-agent/venv/bin/python -I -c '
+            got=$(env -i HOME=/tmp/envhome PATH=/usr/bin "$@" /opt/hermes-agent/venv/bin/python -I -c '
           import os
           print(os.environ.get("HERMES_DISABLE_LAZY_INSTALLS"), os.environ.get("HERMES_LAZY_INSTALL_TARGET"),
-                os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "<unset>"))')
+                os.environ.get("HERMES_WEBAPP_DIST"))')
             if [ "$got" != "$want" ]; then
               echo "SMOKE-FAIL: venv environment '$got', expected '$want' (with: $*)"
               exit 1
             fi
           }
           target=/tmp/envhome/.local/share/hermes-agent/python
-          check_venv_env /tmp/fakebin/brave "$target"
-          check_venv_env /opt/own/browser "$target" AGENT_BROWSER_EXECUTABLE_PATH=/opt/own/browser
-          check_venv_env "" "$target" AGENT_BROWSER_EXECUTABLE_PATH=
-          check_venv_env /tmp/fakebin/brave /srv/data/hermes-agent/python XDG_DATA_HOME=/srv/data
-          # Without pm's copy hermes takes agent-browser from PATH (the AUR
-          # package), so a system browser needs no per-user download.
-          runuser -u smoke -- env PATH="/tmp/fakebin:$PATH" HERMES_DISABLE_LAZY_INSTALLS=1 \
-            /opt/hermes-agent/venv/bin/python -I -c '
+          dist=/opt/hermes-agent/apps/desktop/dist-webapp
+          check_env "1 $target $dist"
+          check_env "1 /srv/data/hermes-agent/python $dist" XDG_DATA_HOME=/srv/data
+          check_env "1 $target /srv/own" HERMES_WEBAPP_DIST=/srv/own
+          got=$(env -i HOME=/tmp/envhome PATH=/usr/bin bash /tmp/launcher-env)
+          if [ "$got" != "1 $target $dist" ]; then
+            echo "SMOKE-FAIL: launcher environment '$got', expected '1 $target $dist'"
+            exit 1
+          fi
+          echo "SMOKE-OK: the launcher and hermes_agent_env.py set the same environment"
+
+      - name: The browser takes a system browser (fresh non-root user)
+        run: |
+          set -euo pipefail
+          # agent-browser left upstream after v0.22.5: browser_exec drives a
+          # Chromium over CDP, from browser.executable_path, else pm's own
+          # (`hermes pm install chromium`), else, with lazy installs off, a
+          # system Chrome, Chromium or Brave (system-browser-fallback.patch).
+          # Neither the launcher nor hermes_agent_env.py exports a
+          # browser: the config migration to v52 writes an exported
+          # AGENT_BROWSER_EXECUTABLE_PATH into the user's config.yaml for good.
+          for file in /usr/bin/hermes /opt/hermes-agent/venv/lib/python*/site-packages/hermes_agent_env.py; do
+            if grep -q AGENT_BROWSER "$file"; then
+              echo "SMOKE-FAIL: $file still sets AGENT_BROWSER_*"
+              exit 1
+            fi
+          done
+          # Stand-ins: this checks which browser hermes would start, not the browser.
+          install -d -m 755 /tmp/fakebin /tmp/bravebin
+          for tool in /tmp/fakebin/chromium /tmp/fakebin/brave /tmp/bravebin/brave; do
+            printf '#!/bin/sh\necho "Chromium 0.0.0"\n' > "$tool"
+          done
+          chmod 755 /tmp/fakebin/* /tmp/bravebin/*
+          useradd -m browser
+          as_browser() { runuser -u browser -- env -C /tmp "$@"; }
+          # A start with a system browser on PATH leaves the browser unset.
+          as_browser PATH="/tmp/fakebin:$PATH" hermes config show >/dev/null
+          config=/home/browser/.hermes/config.yaml
+          if [ -f "$config" ] && grep -q 'executable_path' "$config"; then
+            echo "SMOKE-FAIL: a start wrote a browser into config.yaml: $(grep 'executable_path' "$config")"
+            exit 1
+          fi
+          check_pick() {   # expected browser, then the caller's environment
+            local want=$1 got
+            shift
+            got=$(as_browser "$@" /opt/hermes-agent/venv/bin/python -I -c '
+          from hermes_cli.browser_runtime import chromium_executable
+          print(chromium_executable())')
+            if [ "$got" != "$want" ]; then
+              echo "SMOKE-FAIL: browser_exec would start '$got', expected '$want' (with: $*)"
+              exit 1
+            fi
+          }
+          check_pick /tmp/fakebin/chromium PATH="/tmp/fakebin:$PATH"
+          check_pick /tmp/bravebin/brave PATH="/tmp/bravebin:$PATH"
+          check_pick None PATH="$PATH"
+          # Upstream's order with lazy installs on: no system browser.
+          check_pick None PATH="/tmp/fakebin:$PATH" HERMES_DISABLE_LAZY_INSTALLS=0
+          as_browser hermes config set browser.executable_path /tmp/fakebin/brave >/dev/null
+          check_pick /tmp/fakebin/brave PATH="/tmp/fakebin:$PATH"
+          as_browser PATH="/tmp/fakebin:$PATH" /opt/hermes-agent/venv/bin/python -I -c '
           import sys
-          from tools.browser_tool_install import _find_agent_browser
-          found = _find_agent_browser(validate=False)
-          if found != "/tmp/fakebin/agent-browser":
-              sys.exit(f"SMOKE-FAIL: agent-browser resolves to {found}")
-          print(f"BROWSER-OK: launcher picks a system browser, agent-browser from PATH ({found})")'
+          from tools.browser_use_cli import browser_exec_available
+          if not browser_exec_available():
+              sys.exit("SMOKE-FAIL: browser_exec is unavailable (browser-harness does not import)")'
+          echo "BROWSER-OK: browser_exec takes browser.executable_path, else a system browser; a start writes none"
+
+      - name: The webapp serves the packaged bundle (fresh non-root user)
+        run: |
+          set -euo pipefail
+          # Hermes would build the webapp into its root-owned install root;
+          # HERMES_WEBAPP_DIST names the bundle package() ships.
+          dist=/opt/hermes-agent/apps/desktop/dist-webapp
+          useradd -m webapp
+          if ! out=$(runuser -u webapp -- env -C /tmp /opt/hermes-agent/venv/bin/python -I -c '
+          from pathlib import Path
+          from hermes_cli.webapp import prepare_webapp_renderer
+          print(prepare_webapp_renderer(Path("/opt/hermes-agent")))' 2>&1); then
+            echo "SMOKE-FAIL: the webapp renderer is not ready: $out"
+            exit 1
+          fi
+          if [ "${out##*$'\n'}" != "$dist" ] || [ ! -s "$dist/index.html" ]; then
+            echo "SMOKE-FAIL: the webapp renderer is '${out##*$'\n'}', expected $dist with an index.html"
+            exit 1
+          fi
+          echo "SMOKE-OK: hermes serves the packaged webapp bundle ($(find "$dist" -type f | wc -l) files)"
 
   # ---------------------------------------------------------------------------
   # Release + AUR sync: only after a merge to main or a manual dispatch ON main
