@@ -8,7 +8,7 @@ CLI:
 - `PKGBUILD` / `aur/PKGBUILD` — recipes, no application code
 - `.github/workflows/build.yml` — CI pipeline (bump, plan, build, smoke,
   wrapper, release, aur-sync)
-- `scripts/` — bump automation and the metadata check
+- `scripts/` — bump automation, the metadata check and the release-notes range
 
 The packaged application itself lives at
 https://github.com/NousResearch/hermes-agent — report application
