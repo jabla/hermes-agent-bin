@@ -8,7 +8,8 @@ Two modes:
 
 Every run also compares the AUR source package hermes-agent, which PKGBUILD
 is adapted from, with the state last reviewed here and reports drift as a
-warning.
+warning. A bump also lists the optional-dependency extras that changed
+upstream, against the --extra lists PKGBUILD installs.
 
 Exits 0 without changes when PKGBUILD already tracks the latest upstream tag.
 Requires: gh (GH_TOKEN + GH_REPO env), makepkg available for .SRCINFO regen,
@@ -24,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 import urllib.request
 
 REPO = "NousResearch/hermes-agent"
@@ -44,6 +46,10 @@ VERSION_FIELDS_RE = re.compile(
 # reference's own files (patches, system-tools.py) and count as packaging.
 TARBALL_SUM_RE = re.compile(
     r"(?m)^((?:sha256sums|sha512sums|b2sums|md5sums)=\()'[0-9a-f]+'")
+# The extras build() installs: every `--extra a,b,c` in PKGBUILD.
+EXTRA_ARG_RE = re.compile(r"--extra[ =]([\w.,-]+)")
+# An extra that pulls in others: "hermes-agent[a,b]".
+SELF_REF_RE = re.compile(r"hermes-agent\s*\[([^\]]*)\]")
 
 
 def api(path: str):
@@ -189,6 +195,69 @@ def check_reference_drift() -> list[str]:
     return [drift]
 
 
+def upstream_extras(tag: str) -> dict[str, list[str]]:
+    """{extra: requirement strings} of upstream's pyproject.toml at tag."""
+    text = fetch(f"https://raw.githubusercontent.com/{REPO}/{tag}/pyproject.toml").decode()
+    return tomllib.loads(text)["project"].get("optional-dependencies", {})
+
+
+def requirement_names(reqs: list[str]) -> set[str]:
+    """Package names only: version bumps are uv.lock's business, while a new
+    package can need a system library (python-olm needs cmake)."""
+    return {re.split(r"[\s<>=!~;\[(@]", req.strip(), maxsplit=1)[0].lower().replace("_", "-")
+            for req in reqs if not SELF_REF_RE.match(req.strip())}
+
+
+def installed_extras(extras: dict[str, list[str]], selected: set[str]) -> set[str]:
+    """selected plus every extra they pull in through hermes-agent[...]."""
+    seen, todo = set(), list(selected)
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for req in extras.get(name, []):
+            ref = SELF_REF_RE.match(req.strip())
+            if ref:
+                todo += [n.strip() for n in ref.group(1).split(",") if n.strip()]
+    return seen
+
+
+def extras_report(pkgbuild: str, cur_tag: str, tag: str) -> list[str]:
+    """What changed in upstream's extras between cur_tag and tag that the
+    package has to follow: PKGBUILD installs a fixed --extra list and smoke
+    imports a fixed set, so a new or changed extra goes unnoticed otherwise.
+    Best effort: a failed lookup warns and never blocks the bump."""
+    try:
+        old, new = upstream_extras(cur_tag), upstream_extras(tag)
+    except Exception as exc:
+        print(f"::warning::extras check skipped: {exc}")
+        return []
+    selected = {name for m in EXTRA_ARG_RE.finditer(pkgbuild)
+                for name in m.group(1).split(",") if name}
+    installed = installed_extras(new, selected)
+    lines = []
+    for name in sorted(selected - new.keys()):
+        lines.append(f"`{name}` is in PKGBUILD's --extra list but gone upstream: "
+                     "the build fails until it is removed")
+    for name in sorted(new.keys() - old.keys()):
+        state = "installed" if name in installed else "not installed"
+        lines.append(f"new extra `{name}` ({state}): "
+                     f"{', '.join(sorted(requirement_names(new[name]))) or 'no packages of its own'}")
+    for name in sorted(old.keys() - new.keys() - selected):
+        lines.append(f"extra `{name}` removed upstream")
+    for name in sorted(installed & old.keys() & new.keys()):
+        before, after = requirement_names(old[name]), requirement_names(new[name])
+        if before != after:
+            change = [f"+{n}" for n in sorted(after - before)] + [f"-{n}" for n in sorted(before - after)]
+            lines.append(f"installed extra `{name}` changed packages: {' '.join(change)}")
+    for line in lines:
+        print(f"extras: {line}")
+    if not lines:
+        print(f"extras: nothing to follow between {cur_tag} and {tag}")
+    return lines
+
+
 def gh(args: list[str]) -> subprocess.CompletedProcess:
     return run(["gh", *args])
 
@@ -240,6 +309,7 @@ def main() -> int:
     ).hexdigest()
     print(f"upstream tag={tag} version={version} pkgrel={pkgrel} commit={commit} "
           f"sha256={checksum}")
+    extras = extras_report(pkg, cur_tag, tag)
 
     if not args.pr:
         print("dry run: no files changed (use --pr to open the bump PR)")
@@ -294,6 +364,10 @@ def main() -> int:
     if drift:
         body += (f"\n\n**Drift from {REFERENCE}** (review before or after the merge):\n"
                  + "\n".join(f"- {line}" for line in drift))
+    if extras:
+        body += ("\n\n**Extras changed upstream** (follow them in the `--extra` lists of "
+                 "PKGBUILD and the extras that smoke imports):\n"
+                 + "\n".join(f"- {line}" for line in extras))
     r = gh(["pr", "create", "--base", "main", "--head", branch,
             "--title", f"chore: bump to {tag} (v{full_version})",
             "--body", body])

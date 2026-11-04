@@ -774,6 +774,83 @@ jobs:
           fi
           echo "SMOKE-OK: hermes serves the packaged webapp bundle ($(find "$dist" -type f | wc -l) files)"
 
+      # 0.21.6 shipped without TTS and web search while doctor said so. Every
+      # warning (⚠) and error (✗) doctor prints for a fresh user must be listed
+      # below with the reason it is expected; any other one fails here and gets
+      # read before the package ships. A listed line doctor no longer prints is
+      # only reported. Format: "<symbol> <text as printed> | <reason>", * in the
+      # text matches any run of characters.
+      - name: hermes doctor prints only expected warnings (fresh non-root user)
+        run: |
+          set -euo pipefail
+          cat > /tmp/doctor-expected.txt <<'EOF'
+          ✗ ~/.hermes/.env file missing | fresh user, hermes setup has not run
+          ⚠ config.yaml not found (using defaults) | fresh user, hermes setup has not run
+          ⚠ Skills Hub directory not initialized (run: hermes skills list) | created on first use
+          ⚠ Nous Portal auth (not logged in) | no credentials
+          ⚠ OpenAI Codex auth (not logged in) | no credentials
+          ⚠ MiniMax OAuth (not logged in) | no credentials
+          ⚠ xAI OAuth (not logged in) | no credentials
+          ⚠ OpenRouter API (not configured) | no API key
+          ⚠ No GITHUB_TOKEN (60 req/hr rate limit — set in ~/.hermes/.env for better rates) | optional token
+          ⚠ discord (missing DISCORD_BOT_TOKEN) | no bot token
+          ⚠ discord_admin (missing DISCORD_BOT_TOKEN) | no bot token
+          ⚠ x_search (missing XAI_API_KEY) | no API key
+          ⚠ vision (system dependency not met) | no vision provider configured
+          ⚠ video (system dependency not met) | no vision provider configured
+          ⚠ image_gen (image generation unavailable — check the provider selection and its key or SDK with 'hermes tools') | no image provider configured
+          ⚠ video_gen (system dependency not met) | no video provider configured
+          ⚠ a2a (system dependency not met) | opt-in, no A2A peers or port configured
+          ⚠ browser-cdp (system dependency not met) | needs a CDP endpoint in the config
+          ⚠ hermes-yuanbao (system dependency not met) | only inside a Yuanbao gateway session
+          ⚠ computer_use (system dependency not met) | its desktop backend is not packaged
+          ⚠ Hermes entry point not found (/opt/hermes-agent/venv/bin/hermes) | doctor expects a pip install, the package launcher is /usr/bin/hermes (NousResearch/hermes-agent#137086)
+          ⚠ Chromium not installed (browser_exec cannot start a local browser) | chromium is an optional dependency, smoke does not install it
+          EOF
+          useradd -m doctor
+          # doctor exits 1 whenever it lists issues: its output decides.
+          runuser -u doctor -- env -C /tmp HOME=/home/doctor NO_COLOR=1 \
+            timeout 300 hermes doctor </dev/null >/tmp/doctor.txt 2>&1 || true
+          echo "::group::hermes doctor output"; cat /tmp/doctor.txt; echo "::endgroup::"
+          python3 -I - /tmp/doctor-expected.txt /tmp/doctor.txt <<'PY'
+          import re, sys
+          patterns = {}
+          for line in open(sys.argv[1], encoding="utf-8"):
+              line = line.strip()
+              if not line:
+                  continue
+              text, sep, reason = line.rpartition(" | ")
+              if not sep or not reason.strip() or text[:1] not in "⚠✗":
+                  sys.exit(f"SMOKE-FAIL: malformed expected doctor line: {line}")
+              patterns[text] = re.compile(".*".join(map(re.escape, text.split("*"))))
+          out = open(sys.argv[2], encoding="utf-8", errors="replace").read()
+          out = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out)
+          if "Hermes Doctor" not in out or "Traceback (most recent call last)" in out:
+              sys.exit("SMOKE-FAIL: hermes doctor did not run through (output above)")
+          found, unexpected, ok = set(), [], 0
+          # Progress output ends in \r; a result can share a line with it.
+          for raw in re.split(r"[\r\n]", out):
+              mark = re.search(r"[✓⚠✗]", raw)
+              if not mark:
+                  continue
+              if mark[0] == "✓":
+                  ok += 1
+                  continue
+              line = mark[0] + " " + raw[mark.end():].strip()
+              hits = [text for text, rx in patterns.items() if rx.fullmatch(line)]
+              found.update(hits)
+              if not hits:
+                  unexpected.append(line)
+          for text in patterns.keys() - found:
+              print(f"note: doctor no longer prints '{text}': drop it from the expected list")
+          if not found:
+              sys.exit("SMOKE-FAIL: none of the expected doctor lines appeared: did its format change?")
+          if unexpected:
+              print(*(f"SMOKE-FAIL: unexpected doctor line: {line}" for line in unexpected), sep="\n")
+              sys.exit(1)
+          print(f"SMOKE-OK: doctor printed {ok} passing checks and {len(found)} expected warnings, no other")
+          PY
+
   # ---------------------------------------------------------------------------
   # Release + AUR sync: only after a merge to main or a manual dispatch ON main
   # (never from pull_request or another branch — no releases of unreviewed code).
@@ -825,22 +902,16 @@ jobs:
             echo "Release $TAG already exists, skipping"
             exit 0
           fi
-          # Previous upstream tag, for the compare link. Best effort only: never
-          # fail the release because upstream's release list looks unexpected.
-          PREV=$(gh api "repos/${UPSTREAM_REPO}/releases?per_page=100" \
-                   | python3 -c 'import json,sys; t=[r["tag_name"] for r in json.load(sys.stdin)]; c=sys.argv[1]; i=t.index(c) if c in t else -1; print(t[i+1] if 0 <= i and i+1 < len(t) else "")' "$UPSTREAM" \
-                   2>/dev/null || true)
           {
             printf 'Prebuilt Arch package `%s-%s`, re-wrapped from the upstream source tag `%s` — nothing is compiled at install time.\n\n' \
               "$PKGVER" "$PKGREL" "$UPSTREAM"
             printf -- '- [Upstream release %s](https://github.com/%s/releases/tag/%s)\n' \
               "$UPSTREAM" "$UPSTREAM_REPO" "$UPSTREAM"
-            if [ -n "$PREV" ]; then
-              printf -- '- [Upstream changes %s -> %s](https://github.com/%s/compare/%s...%s)\n' \
-                "$PREV" "$UPSTREAM" "$UPSTREAM_REPO" "$PREV" "$UPSTREAM"
-            else
-              printf -- '- [Upstream changes](https://github.com/%s/releases)\n' "$UPSTREAM_REPO"
-            fi
+            # Changes since the upstream tag of the last release here, skipped
+            # upstream versions included. Best effort: prints a generic link
+            # on any error and never fails the release.
+            python3 -I scripts/upstream-range.py "$GITHUB_REPOSITORY" "$TAG" "$UPSTREAM_REPO" "$UPSTREAM" \
+              || printf -- '- [Upstream changes](https://github.com/%s/releases)\n' "$UPSTREAM_REPO"
             # Every source patch of PKGBUILD, linked at the built commit.
             patches=$(sed -nE "s/^  '([^'/]+\.patch)'$/\1/p" PKGBUILD)
             if [ -n "$patches" ]; then
