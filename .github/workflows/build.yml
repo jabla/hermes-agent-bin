@@ -211,7 +211,7 @@ jobs:
       commit: ${{ steps.upstream.outputs.commit }}
     steps:
       - name: Install base toolchain (Arch container)
-        run: pacman -Syu --noconfirm --needed base-devel git
+        run: pacman -Syu --noconfirm --needed base-devel git python
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -219,12 +219,14 @@ jobs:
         id: upstream
         run: echo "commit=$(sed -nE 's/^_commit=([0-9a-f]{40})$/\1/p' PKGBUILD)" >> "$GITHUB_OUTPUT"
 
-      - name: Validate aur/.SRCINFO and the wrapper's metadata
+      - name: Validate aur/.SRCINFO, the wrapper's metadata and aur-source/
         run: |
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           runuser -u builder -- sh -c 'cd "$GITHUB_WORKSPACE/aur" && makepkg --printsrcinfo | diff -q - .SRCINFO'
           runuser -u builder -- bash "$GITHUB_WORKSPACE/scripts/check-metadata.sh"
+          # The AUR source package hermes-agent is generated from PKGBUILD.
+          runuser -u builder -- python3 -I "$GITHUB_WORKSPACE/scripts/source-package.py" --check
 
       # uv's wheels built from source (python-olm, ~45 s) and npm's
       # downloads. A pull request restores the caches of its own runs and of
@@ -1018,4 +1020,52 @@ jobs:
             git commit -m "Update to ${PKGVER}-${PKGREL}"
             git push origin master
             echo "AUR updated to ${PKGVER}-${PKGREL}"
+          fi
+
+      # The AUR source package hermes-agent: aur-source/ plus the local files
+      # it lists, generated from PKGBUILD (scripts/source-package.py; build
+      # checks it). source-package.py stops when someone else pushed there
+      # last, so a co-maintainer's change is read before it is overwritten.
+      # Until SOURCE_PUBLISH is true, and always in copies of this repository,
+      # this step only shows what it would push.
+      - name: Push the AUR source package hermes-agent (dry run until enabled)
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          SOURCE_PUBLISH: "false"
+        run: |
+          set -euo pipefail
+          MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$MAIN" != "$GITHUB_SHA" ]; then
+            echo "main moved on to ${MAIN}; not publishing ${GITHUB_SHA}"
+            exit 0
+          fi
+          publish=false
+          if [ "$SOURCE_PUBLISH" = true ] && [ "$GITHUB_REPOSITORY" = jabla/hermes-agent-bin ]; then
+            publish=true
+          fi
+          rm -rf /tmp/aur-source
+          if $publish; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur_ci && chmod 600 ~/.ssh/aur_ci
+            ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+            export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_ci -o IdentitiesOnly=yes"
+            git clone ssh://aur@aur.archlinux.org/hermes-agent.git /tmp/aur-source
+          else
+            git clone https://aur.archlinux.org/hermes-agent.git /tmp/aur-source
+          fi
+          python3 -I scripts/source-package.py --into /tmp/aur-source
+          PKGVER=$(grep -oP '(?<=^pkgver=).*' aur-source/PKGBUILD)
+          PKGREL=$(grep -oP '(?<=^pkgrel=).*' aur-source/PKGBUILD)
+          cd /tmp/aur-source
+          if git diff --cached --quiet; then
+            echo "AUR source package hermes-agent up to date, nothing to push"
+          elif ! $publish; then
+            echo "DRY RUN: would push ${PKGVER}-${PKGREL} to the AUR source package hermes-agent:"
+            git diff --cached --stat
+            git diff --cached
+          else
+            git -c user.name="hermes-agent-bin CI" -c user.email=jabla@users.noreply.github.com \
+              commit -m "Update to ${PKGVER}-${PKGREL} (jabla/hermes-agent-bin@${GITHUB_SHA::12})"
+            git push origin master
+            echo "AUR source package hermes-agent updated to ${PKGVER}-${PKGREL}"
           fi

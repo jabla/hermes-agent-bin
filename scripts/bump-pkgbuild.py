@@ -3,13 +3,12 @@
 
 Two modes:
   * default (dry run): report what a bump would change, write nothing.
-  * --pr: create branch + commit (PKGBUILD, aur/PKGBUILD, aur/.SRCINFO),
-    push it and open an auto-merge PR. Never commits to main directly.
+  * --pr: create branch + commit (PKGBUILD, aur/PKGBUILD, aur/.SRCINFO and
+    the AUR source package in aur-source/), push it and open an auto-merge
+    PR. Never commits to main directly.
 
-Every run also compares the AUR source package hermes-agent, which PKGBUILD
-is adapted from, with the state last reviewed here and reports drift as a
-warning. A bump also lists the optional-dependency extras that changed
-upstream, against the --extra lists PKGBUILD installs.
+A bump also lists the optional-dependency extras that changed upstream,
+against the --extra lists PKGBUILD installs.
 
 Exits 0 without changes when PKGBUILD already tracks the latest upstream tag.
 Requires: gh (GH_TOKEN + GH_REPO env), makepkg available for .SRCINFO regen,
@@ -29,23 +28,7 @@ import tomllib
 import urllib.request
 
 REPO = "NousResearch/hermes-agent"
-REFERENCE = "hermes-agent"
-REFERENCE_PKGBUILD = f"https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={REFERENCE}"
-REFERENCE_LOG = f"https://aur.archlinux.org/cgit/aur.git/log/?h={REFERENCE}"
-# Fingerprint (see reference_fingerprint) of the hermes-agent PKGBUILD that
-# PKGBUILD was last compared with: hermes-agent 0.22.0-1. Update it after
-# porting a reference change.
-REFERENCE_PKGBUILD_SHA256 = "7e08d79e7f6862935d5e738d8f5daac52fcd263b6345b05e681db5deb91fea35"
 SHA_RE = re.compile(r"^sha256sums=\('([0-9a-f]{64})'", re.M)
-# The fields every reference release changes; everything else is packaging.
-# Comment lines count as neither: the reference rewrites version comments
-# with every release.
-VERSION_FIELDS_RE = re.compile(
-    r"(?m)^(?:pkgver|_tagver|pkgrel|_commit|_commit_date)=[^\n]*\n|^[ \t]*#[^\n]*\n")
-# The first checksum is the upstream tarball's; the others are the
-# reference's own files (patches, system-tools.py) and count as packaging.
-TARBALL_SUM_RE = re.compile(
-    r"(?m)^((?:sha256sums|sha512sums|b2sums|md5sums)=\()'[0-9a-f]+'")
 # The extras build() installs: every `--extra a,b,c` in PKGBUILD.
 EXTRA_ARG_RE = re.compile(r"--extra[ =]([\w.,-]+)")
 # An extra that pulls in others: "hermes-agent[a,b]".
@@ -163,38 +146,6 @@ def regen_srcinfo(aur_dir: str):
         f.write(r.stdout)
 
 
-def reference_fingerprint(text: str) -> str:
-    """sha256 of a PKGBUILD without the fields every release changes."""
-    text = TARBALL_SUM_RE.sub(r"\1", VERSION_FIELDS_RE.sub("", text))
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
-def check_reference_drift() -> list[str]:
-    """Report when the AUR source package changed beyond its version fields.
-
-    PKGBUILD is adapted from it: build(), package(), the launcher and its
-    environment follow the reference, apart from the Python version and
-    the install stamp written in package(). A
-    change there usually has to be ported. Warns instead of failing (the
-    reference may simply have been reworded) and never copies anything.
-    """
-    try:
-        text = fetch(REFERENCE_PKGBUILD).decode()
-    except Exception as exc:        # AUR outages must not block the bump
-        print(f"::warning::{REFERENCE} drift check skipped: {exc}")
-        return []
-    current = reference_fingerprint(text)
-    if current == REFERENCE_PKGBUILD_SHA256:
-        print(f"PKGBUILD is in sync with the reviewed {REFERENCE} PKGBUILD")
-        return []
-    drift = (f"the {REFERENCE} PKGBUILD changed beyond its version fields since "
-             f"it was last reviewed ({REFERENCE_LOG}); port what applies to "
-             f"PKGBUILD, then set REFERENCE_PKGBUILD_SHA256 in "
-             f"scripts/bump-pkgbuild.py to {current}")
-    print(f"::warning title=Drift from {REFERENCE}::{drift}")
-    return [drift]
-
-
 def upstream_extras(tag: str) -> dict[str, list[str]]:
     """{extra: requirement strings} of upstream's pyproject.toml at tag."""
     text = fetch(f"https://raw.githubusercontent.com/{REPO}/{tag}/pyproject.toml").decode()
@@ -269,7 +220,6 @@ def main() -> int:
     args = ap.parse_args()
 
     require_non_root()
-    drift = check_reference_drift()
 
     rel = api(f"/repos/{REPO}/releases/latest")
     tag = rel["tag_name"]
@@ -335,6 +285,11 @@ def main() -> int:
     edit_pkgbuild("PKGBUILD", tag, version, commit, checksum, pkgrel)
     edit_aur_pkgbuild("aur/PKGBUILD", version, pkgrel)
     regen_srcinfo("aur")
+    # The AUR source package follows PKGBUILD (scripts/source-package.py).
+    r = run([sys.executable, "-I", "scripts/source-package.py"])
+    if r.returncode != 0:
+        print("source-package.py failed:", r.stdout, r.stderr)
+        return 1
 
     branch = f"bump/{tag}"
     gh_repo = os.environ["GH_REPO"]
@@ -345,7 +300,7 @@ def main() -> int:
     run(["git", "checkout", "-B", branch])
     run(["git", "config", "user.email", "jabla@users.noreply.github.com"])
     run(["git", "config", "user.name", "hermes-agent-bin CI"])
-    run(["git", "add", "PKGBUILD", "aur/PKGBUILD", "aur/.SRCINFO"])
+    run(["git", "add", "PKGBUILD", "aur/PKGBUILD", "aur/.SRCINFO", "aur-source"])
     r = run(["git", "commit", "-m", f"chore: bump to {tag} (v{full_version})"])
     if r.returncode != 0:
         print("commit failed:", r.stderr)
@@ -361,9 +316,6 @@ def main() -> int:
     body = (f"Automated bump to upstream [release {tag}]"
             f"(https://github.com/{REPO}/releases/tag/{tag}).\n\n"
             "Build, smoke and wrapper run as required checks; auto-merge after green.")
-    if drift:
-        body += (f"\n\n**Drift from {REFERENCE}** (review before or after the merge):\n"
-                 + "\n".join(f"- {line}" for line in drift))
     if extras:
         body += ("\n\n**Extras changed upstream** (follow them in the `--extra` lists of "
                  "PKGBUILD and the extras that smoke imports):\n"
