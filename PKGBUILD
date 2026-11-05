@@ -1,6 +1,6 @@
-# Build PKGBUILD for the prebuilt hermes-agent-bin package.
-# Adapted from the AUR package hermes-agent (maintainer y0uCeF,
-# https://aur.archlinux.org/packages/hermes-agent). Upstream pins a large,
+# Build PKGBUILD for the prebuilt hermes-agent-bin package. It started from
+# y0uCeF's AUR package hermes-agent, which is now generated from it
+# (scripts/source-package.py writes aur-source/). Upstream pins a large,
 # partly-native Python dependency set; uv's relocatable venv keeps the
 # packaged environment usable after makepkg moves it under /opt. The build
 # (npm ci + esbuild TUI/web bundles + uv sync) runs ONCE here in CI; the
@@ -102,14 +102,14 @@ build() {
     --python "/usr/bin/python${_pyver}" \
     --relocatable \
     venv
-  # Lazy installs are off for the root-owned venv, so the extras users
-  # commonly hit ship here, as in the reference package: anthropic (Anthropic
-  # provider), edge-tts (default TTS), ddgs (free web search), doc-extract,
-  # keychain (`hermes vault key migrate --to keychain`) and the gateways
-  # beyond messaging. The documents extras stay out: skills build their own
-  # side environment (`hermes pm environment documents`). python-olm (matrix)
-  # builds a vendored libolm whose cmake_minimum_required CMake >= 4 rejects
-  # unless the policy minimum is raised.
+  # Lazy installs are off for the root-owned venv, so the extras users commonly
+  # hit ship here: anthropic (Anthropic provider), edge-tts (default TTS), ddgs
+  # (free web search), doc-extract, keychain (`hermes vault key migrate --to
+  # keychain`) and the gateways beyond messaging. The documents extras stay
+  # out: skills build their own side environment (`hermes pm environment
+  # documents`). python-olm (matrix) builds a vendored libolm whose
+  # cmake_minimum_required CMake >= 4 rejects unless the policy minimum is
+  # raised.
   CMAKE_POLICY_VERSION_MINIMUM=3.5 \
   UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT="$PWD/venv" \

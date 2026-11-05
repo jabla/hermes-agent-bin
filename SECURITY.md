@@ -31,8 +31,10 @@ vulnerabilities there.
   secrets they cannot. AUR keys are not per package: the key can push to every
   package of the AUR account, and `hermes-agent-desktop-bin` publishes with the
   same key, so both repositories must protect it the same way.
-- `PKGBUILD` follows the AUR source package `hermes-agent` after review; the
-  bump job only reports drift from it and never copies anything automatically.
+- The AUR source package `hermes-agent` is generated from `PKGBUILD`
+  (`aur-source/`, checked by `build`). `aur-sync` pushes it with the same key
+  only once `SOURCE_PUBLISH` is enabled in the workflow. It never pushes over
+  a commit someone else pushed there last.
 - A new version's release can take the package that the merged pull
   request's run built and smoke-tested instead of building it again on
   `main`. This only happens for a pull request from this repository whose
