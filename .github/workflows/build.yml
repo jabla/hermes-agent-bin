@@ -228,15 +228,14 @@ jobs:
           # The AUR source package hermes-agent is generated from PKGBUILD.
           runuser -u builder -- python3 -I "$GITHUB_WORKSPACE/scripts/source-package.py" --check
 
-      # uv's wheels built from source (python-olm, ~45 s) and npm's
-      # downloads. A pull request restores the caches of its own runs and of
-      # main.
-      - name: Restore the uv and npm caches
+      # uv's wheels built from source (python-olm, ~45 s). pnpm keeps its
+      # store in makepkg's srcdir (a cold install takes ~20 s). A pull request
+      # restores the caches of its own runs and of main.
+      - name: Restore the uv cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             /home/builder/.cache/uv
-            /home/builder/.npm
           key: build-cache-${{ hashFiles('PKGBUILD', '*.patch') }}
           restore-keys: build-cache-
 
@@ -554,6 +553,7 @@ jobs:
           from hermes_cli.gateway import generate_systemd_unit, get_python_path
           from hermes_cli.main_tui_launch import _tui_node_bin
           from hermes_cli.venv_sync import check_runtime
+          from pm.install import installed_package
           from tools.mcp_tool_config import _managed_launcher, _resolve_stdio_command
           root = Path("/opt/hermes-agent")
           venv_python = "/opt/hermes-agent/venv/bin/python"
@@ -596,6 +596,12 @@ jobs:
           node = _tui_node_bin("node")
           if not node.startswith(store) or os.path.realpath(node) != os.path.realpath("/usr/bin/node"):
               problems.append(f"TUI node is {node}")
+          # pnpm installs upstream's JS workspaces; pm hands out the system one.
+          pnpm = installed_package("pnpm")
+          if pnpm is None or pnpm.binary is None or os.path.realpath(pnpm.binary) != os.path.realpath("/usr/bin/pnpm"):
+              problems.append(f"pm's pnpm is {pnpm}")
+          elif subprocess.run([str(pnpm.binary), "--version"], capture_output=True).returncode != 0:
+              problems.append(f"pm's pnpm {pnpm.binary} does not run")
           for command in ("npx", "uvx"):
               launcher = _managed_launcher(command)
               if not launcher or not launcher[0].startswith(store):
@@ -619,7 +625,7 @@ jobs:
               problems.append("a per-user pm store was created")
           if problems:
               sys.exit("SMOKE-FAIL: " + "; ".join(problems))
-          print(f"SYSTEM-TOOLS-OK: node {node}, npx/uvx run, children, cron and unit on the venv, extras installed")
+          print(f"SYSTEM-TOOLS-OK: node {node}, npx/uvx/pnpm run, children, cron and unit on the venv, extras installed")
           PY
 
       - name: A plugin with Python dependencies is admitted (fresh non-root user)

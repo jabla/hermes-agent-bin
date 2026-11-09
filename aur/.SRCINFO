@@ -9,6 +9,7 @@ pkgbase = hermes-agent-bin
 	depends = python<3.15
 	depends = nodejs>=26
 	depends = npm
+	depends = pnpm
 	depends = uv>=0.13.5
 	depends = ripgrep
 	depends = ffmpeg

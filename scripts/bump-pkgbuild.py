@@ -8,7 +8,8 @@ Two modes:
     PR. Never commits to main directly.
 
 A bump also lists the optional-dependency extras that changed upstream,
-against the --extra lists PKGBUILD installs.
+against the --extra lists PKGBUILD installs, and moves the pnpm the build
+downloads to upstream's pin (pm/lock.json).
 
 Exits 0 without changes when PKGBUILD already tracks the latest upstream tag.
 Requires: gh (GH_TOKEN + GH_REPO env), makepkg available for .SRCINFO regen,
@@ -19,11 +20,13 @@ runs this script through runuser as an unprivileged user.
 """
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import tomllib
 import urllib.request
 
@@ -33,6 +36,48 @@ SHA_RE = re.compile(r"^sha256sums=\('([0-9a-f]{64})'", re.M)
 EXTRA_ARG_RE = re.compile(r"--extra[ =]([\w.,-]+)")
 # An extra that pulls in others: "hermes-agent[a,b]".
 SELF_REF_RE = re.compile(r"hermes-agent\s*\[([^\]]*)\]")
+
+# pnpm as PKGBUILD downloads it (source_x86_64=()): the linux-x64 artifacts of
+# upstream's pin in pm/lock.json, the @pnpm/exe executable, then the launcher
+# package.
+PNPM_URLS = ("https://registry.npmjs.org/@pnpm/exe.linux-x64/-/exe.linux-x64-{v}.tgz",
+             "https://registry.npmjs.org/pnpm/-/pnpm-{v}.tgz")
+PNPM_VAR_RE = re.compile(r"(?m)^_pnpmver=(\S+)")
+PNPM_SUMS_RE = re.compile(r"(?ms)^sha256sums_x86_64=\(.*?\)")
+
+
+def tarball_file(tarball: bytes, name: str) -> bytes:
+    """A file of upstream's archive, by its path below the top directory."""
+    with tarfile.open(fileobj=io.BytesIO(tarball)) as tar:
+        for member in tar:
+            if member.isfile() and member.name.partition("/")[2] == name:
+                return tar.extractfile(member).read()
+    raise KeyError(f"the upstream archive has no {name}")
+
+
+def pnpm_pin(tarball: bytes) -> tuple[str, list[str]]:
+    """Upstream's pnpm pin (pm/lock.json): its version and the sha256 digests
+    of the two linux-x64 artifacts, in source_x86_64=() order."""
+    pin = json.loads(tarball_file(tarball, "pm/lock.json"))["packages"]["pnpm"]
+    version = pin["version"]
+    sums = {a["url"]: a["sha256"] for a in pin["artifacts"]["linux-x64"]}
+    urls = [url.format(v=version) for url in PNPM_URLS]
+    if sorted(sums) != sorted(urls):
+        sys.exit(f"pm/lock.json pins pnpm {version} as {sorted(sums)}, "
+                 f"PKGBUILD downloads {urls}")
+    return version, [sums[url] for url in urls]
+
+
+def edit_pnpm(path: str, version: str, sums: list[str]):
+    """Write upstream's pnpm pin into PKGBUILD (_pnpmver, sha256sums_x86_64)."""
+    pkg = open(path).read()
+    pkg, n = PNPM_VAR_RE.subn(f"_pnpmver={version}", pkg)
+    block = "sha256sums_x86_64=(" + "\n                   ".join(f"'{s}'" for s in sums) + ")"
+    pkg, m = PNPM_SUMS_RE.subn(lambda _m: block, pkg)
+    if n != 1 or m != 1:
+        sys.exit(f"cannot write the pnpm pin into {path} "
+                 f"({n} _pnpmver= lines, {m} sha256sums_x86_64= arrays)")
+    open(path, "w").write(pkg)
 
 
 def api(path: str):
@@ -254,11 +299,14 @@ def main() -> int:
     if obj["type"] == "tag":
         commit = api(f"/repos/{REPO}/git/tags/{commit}")["object"]["sha"]
 
-    checksum = hashlib.sha256(
-        fetch(f"https://github.com/{REPO}/archive/refs/tags/{tag}.tar.gz")
-    ).hexdigest()
+    tarball = fetch(f"https://github.com/{REPO}/archive/refs/tags/{tag}.tar.gz")
+    checksum = hashlib.sha256(tarball).hexdigest()
     print(f"upstream tag={tag} version={version} pkgrel={pkgrel} commit={commit} "
           f"sha256={checksum}")
+    pnpm_version, pnpm_sums = pnpm_pin(tarball)
+    cur_pnpm = PNPM_VAR_RE.search(pkg).group(1)
+    pnpm_move = f"pnpm pin {cur_pnpm} -> {pnpm_version}" if pnpm_version != cur_pnpm else ""
+    print(f"upstream pins pnpm {pnpm_version}" + (f": {pnpm_move}" if pnpm_move else ", as PKGBUILD"))
     extras = extras_report(pkg, cur_tag, tag)
 
     if not args.pr:
@@ -283,6 +331,7 @@ def main() -> int:
         return 0
 
     edit_pkgbuild("PKGBUILD", tag, version, commit, checksum, pkgrel)
+    edit_pnpm("PKGBUILD", pnpm_version, pnpm_sums)
     edit_aur_pkgbuild("aur/PKGBUILD", version, pkgrel)
     regen_srcinfo("aur")
     # The AUR source package follows PKGBUILD (scripts/source-package.py).
@@ -316,6 +365,8 @@ def main() -> int:
     body = (f"Automated bump to upstream [release {tag}]"
             f"(https://github.com/{REPO}/releases/tag/{tag}).\n\n"
             "Build, smoke and wrapper run as required checks; auto-merge after green.")
+    if pnpm_move:
+        body += f"\n\nFollows upstream's {pnpm_move} (pm/lock.json)."
     if extras:
         body += ("\n\n**Extras changed upstream** (follow them in the `--extra` lists of "
                  "PKGBUILD and the extras that smoke imports):\n"

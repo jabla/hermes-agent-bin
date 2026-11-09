@@ -21,7 +21,8 @@ vulnerabilities there.
 - The venv runs on Arch's `python` package (pinned to one minor version in
   `depends=()`), so interpreter fixes arrive with the system's updates. Python dependencies come
   from upstream's `uv.lock` (`uv sync --locked`), Node dependencies from its
-  `package-lock.json` (`npm ci --ignore-scripts`).
+  `pnpm-lock.yaml` (`pnpm install --frozen-lockfile --ignore-scripts`), installed
+  by the pnpm `pm/lock.json` pins (both artifacts checksummed in `PKGBUILD`).
 - GitHub Actions are pinned to commit SHAs (official `actions/*`), kept current by Dependabot (weekly, grouped).
 - The `AUR_SSH_KEY` secret is used only by the `aur-sync` job; `release` and
   `aur-sync` run exclusively for `main` (push or manual dispatch on `main`),
