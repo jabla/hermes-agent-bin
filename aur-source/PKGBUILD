@@ -330,9 +330,11 @@ PY
     echo '  shift 2'
     echo "  exec /opt/${_optname}/venv/bin/python -P -m" '"$module" "$@"'
     echo 'fi'
-    # No browser export: browser_exec reads only browser.executable_path
-    # (then pm's Chromium). The config migration to v52 would write an
-    # exported AGENT_BROWSER_EXECUTABLE_PATH into the user's config.yaml.
+    # No browser export: browser_exec takes browser.executable_path, then
+    # pm's Chromium, then a system Chrome, Chromium or Brave
+    # (system-browser-fallback.patch). The config migration to v52 would
+    # write an exported AGENT_BROWSER_EXECUTABLE_PATH into the user's
+    # config.yaml.
     echo "exec /opt/${_optname}/venv/bin/python -m hermes_cli.main" '"$@"'
   } > "$pkgdir/usr/bin/hermes"
 

@@ -8,7 +8,8 @@ CLI:
 - `PKGBUILD` / `aur/PKGBUILD` — recipes, no application code
 - `.github/workflows/build.yml` — CI pipeline (bump, plan, build, smoke,
   wrapper, release, aur-sync)
-- `scripts/` — bump automation, the metadata check and the release-notes range
+- `scripts/` — bump automation, the AUR source package, the metadata check
+  and the release-notes range
 
 The packaged application itself lives at
 https://github.com/NousResearch/hermes-agent — report application
@@ -50,5 +51,5 @@ vulnerabilities there.
 ## Reporting
 
 To report a security issue in this repository's automation, open a private
-vulnerability report via GitHub: *Security → Report a vulnerability* (or
-contact the maintainer through the AUR package page).
+vulnerability report with *Report a vulnerability* on the repository's
+*Security* tab (or contact the maintainer through the AUR package page).
