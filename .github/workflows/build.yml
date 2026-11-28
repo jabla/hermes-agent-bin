@@ -536,6 +536,28 @@ jobs:
             exit 1
           fi
           echo "SMOKE-OK: hermes --print-runtime-command names $py in a command that runs"
+          # The desktop app runs its default-plugins preflight through the
+          # launcher's --run-module. The module comes from /opt, not the cwd,
+          # and skips (exit 4) since lazy installs are off.
+          decoy=$(mktemp -d)
+          mkdir "$decoy/hermes_cli" "$decoy/home"
+          echo 'raise SystemExit("decoy hermes_cli imported")' > "$decoy/hermes_cli/__init__.py"
+          rc=0
+          ensure=$(cd "$decoy" && HERMES_HOME="$decoy/home" hermes --run-module hermes_cli.default_plugins ensure --json --timeout 10 2>&1) || rc=$?
+          rm -r "$decoy"
+          if [ "$rc" -ne 4 ] || ! grep -q '"state": *"skipped"' <<<"$ensure"; then
+            echo "SMOKE-FAIL: hermes --run-module hermes_cli.default_plugins ensure exited $rc:"
+            echo "$ensure"
+            exit 1
+          fi
+          rc=0
+          hermes --run-module 'bad;name' > /tmp/run-module.err 2>&1 || rc=$?
+          if [ "$rc" -ne 2 ] || ! grep -q "needs a module" /tmp/run-module.err; then
+            echo "SMOKE-FAIL: hermes --run-module accepted an invalid module name (exit $rc):"
+            cat /tmp/run-module.err
+            exit 1
+          fi
+          echo "SMOKE-OK: hermes --run-module runs the module from /opt and refuses an invalid name"
           echo "SMOKE-OK: hermes ${pkgver} runs on $("$py" -c 'import platform; print("python", platform.python_version())') and answers --help"
 
       - name: pm resolves the system tools (fresh non-root user)
